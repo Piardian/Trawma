@@ -25,6 +25,7 @@ class OrderFlowConfig:
     absorption_delta_multiple: float = 1.5
     flip_delta_multiple: float = 0.8
     require_delta_source: bool = True
+    strict_real_delta: bool = False
 
 @dataclass(frozen=True)
 class LiquidityPool:
@@ -107,12 +108,12 @@ def calculate_orderflow_features(frame: pd.DataFrame, *, ticks: pd.DataFrame|Non
     cfg=config or OrderFlowConfig()
     df=_normalise(frame)
     if df.empty:
-        for c in ("bar_delta","cvd","delta_abs_mean_20","delta_zscore","atr_14","vol_sma_20","delta_source"): df[c]=pd.Series(dtype="object" if c=="delta_source" else float,index=df.index)
+        for c in ("bar_delta","cvd","delta_abs_mean_20","delta_zscore","atr_14","vol_sma_20","delta_source","delta_quality"): df[c]=pd.Series(dtype="object" if c=="delta_source" else float,index=df.index)
         return df
     if "volume_delta" in df and df.volume_delta.notna().any():
-        delta=df.volume_delta.fillna(0.0).astype(float); source="exchange_volume_delta"
+        delta=df.volume_delta.fillna(0.0).astype(float); source="real_taker"
     elif ticks is not None:
-        delta=_tick_rule(ticks,df); source="tick_rule_estimate"
+        delta=_tick_rule(ticks,df); source="tick_rule"
     else:
         vc="tick_volume" if "tick_volume" in df else "volume" if "volume" in df else None
         if vc is None:
@@ -125,7 +126,7 @@ def calculate_orderflow_features(frame: pd.DataFrame, *, ticks: pd.DataFrame|Non
             sign=np.where(df.close>=df.close.shift(1),1.0,-1.0)
             sign[0]=1.0
             delta=bvc.where(spread>0,vol*sign).replace([np.inf,-np.inf],np.nan).fillna(0.0)
-            source=f"bvc_synthetic_{vc}"
+            source="synthetic_bvc"
     df["bar_delta"]=delta.astype(float)
     if "session" in df:
         sessions=df.session.astype("string").fillna("UNKNOWN")
@@ -142,6 +143,7 @@ def calculate_orderflow_features(frame: pd.DataFrame, *, ticks: pd.DataFrame|Non
     vc="tick_volume" if "tick_volume" in df else "volume" if "volume" in df else None
     df["vol_sma_20"]=df[vc].rolling(max(1,cfg.volume_sma_period),min_periods=1).mean() if vc else np.nan
     df["delta_source"]=source
+    df["delta_quality"]="REAL" if source in ("real_taker","tick_rule") else "ESTIMATED"
     return df
 
 def detect_orderflow_pools(frame: pd.DataFrame, *, config: OrderFlowConfig|None=None, profile: Any|None=None, previous_session_levels: Mapping[str,float]|None=None) -> list[LiquidityPool]:
@@ -185,13 +187,16 @@ def detect_orderflow_pools(frame: pd.DataFrame, *, config: OrderFlowConfig|None=
 def _metrics(df):
     if df.empty: return {"bar_delta":0.0,"cvd_value":0.0,"delta_zscore":0.0}
     x=df.iloc[-1]
-    return {"bar_delta":float(x.bar_delta),"cvd_value":float(x.cvd),"delta_zscore":float(x.delta_zscore),"delta_source":str(x.delta_source)}
+    return {"bar_delta":float(x.bar_delta),"cvd_value":float(x.cvd),"delta_zscore":float(x.delta_zscore),"delta_source":str(x.delta_source),"delta_quality":str(x.delta_quality) if "delta_quality" in x else ("REAL" if str(x.delta_source) in ("real_taker","tick_rule") else "ESTIMATED")}
 
-def evaluate_orderflow_trigger(frame: pd.DataFrame, side: str, *, poi: LiquidityPool|Mapping[str,Any]|None=None, ticks: pd.DataFrame|None=None, config: OrderFlowConfig|None=None, session_allowed: bool=True, spread: float|None=None, stop_distance: float|None=None, tp1_distance: float|None=None, tp2_distance: float|None=None, min_net_rr_tp1: float=1.0, min_net_rr_tp2: float=1.5, max_spread_to_sl: float=0.25) -> TriggerDecision:
+def evaluate_orderflow_trigger(frame: pd.DataFrame, side: str, *, poi: LiquidityPool|Mapping[str,Any]|None=None, ticks: pd.DataFrame|None=None, config: OrderFlowConfig|None=None, session_allowed: bool=True, spread: float|None=None, stop_distance: float|None=None, tp1_distance: float|None=None, tp2_distance: float|None=None, min_net_rr_tp1: float=1.0, min_net_rr_tp2: float=1.5, max_spread_to_sl: float=0.25, strict_real_delta: bool|None=None) -> TriggerDecision:
     cfg=config or OrderFlowConfig(); side=str(side).upper()
     if side not in ("LONG","SHORT"): return TriggerDecision("NO_TRADE",reason="invalid_side")
     df=calculate_orderflow_features(frame,ticks=ticks,config=cfg)
     if len(df)<max(3,cfg.delta_lookback//2): return TriggerDecision("NO_TRADE",reason="insufficient_bars")
+    strict = cfg.strict_real_delta if strict_real_delta is None else bool(strict_real_delta)
+    if strict and str(df.delta_source.iloc[-1]) not in ("real_taker", "tick_rule"):
+        return TriggerDecision("NO_TRADE", reason="strict_real_delta_required", metrics={**_metrics(df), "delta_quality": "ESTIMATED"})
     if not session_allowed: return TriggerDecision("NO_TRADE",reason="session_veto")
     if poi is not None:
         if isinstance(poi,LiquidityPool): lo,hi=poi.lower,poi.upper
