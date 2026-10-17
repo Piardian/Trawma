@@ -5,6 +5,8 @@ from typing import Any, Literal, Mapping
 import numpy as np
 import pandas as pd
 
+EngineMode = Literal["amt", "orderflow", "hybrid"]
+
 @dataclass(frozen=True)
 class OrderFlowConfig:
     session_timezone: str = "UTC"
