@@ -92,13 +92,12 @@ def test_cli_modes_and_orderflow_analysis(tmp_path):
     from pragma.core import analyze_csv
     csv = tmp_path / "bars.csv"
     bars(30).reset_index(names="timestamp").to_csv(csv, index=False)
-    with pytest.raises(NotImplementedError, match="AMT"):
-        analyze_csv(csv, "amt")
-    with pytest.raises(NotImplementedError, match="Hybrid"):
-        analyze_csv(csv, "hybrid")
+    amt = analyze_csv(csv, "amt", "TEST")
+    hybrid = analyze_csv(csv, "hybrid", "TEST")
     result = analyze_csv(csv, "orderflow", "TEST")
-    assert result["engine"] == "orderflow"
-    assert result["bars"] == 30
+    assert amt["engine"] == "amt" and "amt" in amt and "vwap" in amt
+    assert hybrid["engine"] == "hybrid" and "pools" in hybrid and "amt" in hybrid
+    assert result["engine"] == "orderflow" and result["bars"] == 30
 
 
 
