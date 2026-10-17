@@ -29,7 +29,7 @@ def test_bvc_delta_formula_and_flat_range_fallback():
     # A flat-range candle that closes below the prior close is classified as negative.
     assert out["bar_delta"].iloc[1] == pytest.approx(-25.0)
     assert out["bar_delta"].iloc[2] == pytest.approx(-25.0)
-    assert out["delta_source"].iloc[0] == "bvc_synthetic_tick_volume"
+    assert out["delta_source"].iloc[0] == "synthetic_bvc"
 
 
 def test_real_volume_delta_has_priority_over_bvc():
@@ -37,7 +37,7 @@ def test_real_volume_delta_has_priority_over_bvc():
     df["volume_delta"] = [10, -5, 4, -1, 2]
     result = calculate_orderflow_features(df)
     assert result["bar_delta"].tolist() == [10, -5, 4, -1, 2]
-    assert (result["delta_source"] == "exchange_volume_delta").all()
+    assert (result["delta_source"] == "real_taker").all()
 
 
 def test_session_cvd_resets_at_utc_date_boundary():
@@ -62,7 +62,7 @@ def test_tick_rule_delta_aggregates_signed_ticks():
     )
     result = calculate_orderflow_features(df, ticks=ticks)
     assert result["bar_delta"].tolist() == [2, 3, -4]
-    assert result["delta_source"].iloc[0] == "tick_rule_estimate"
+    assert result["delta_source"].iloc[0] == "tick_rule"
 
 
 def test_detector_finds_effort_result_absorption_node():
@@ -99,3 +99,98 @@ def test_cli_modes_and_orderflow_analysis(tmp_path):
     result = analyze_csv(csv, "orderflow", "TEST")
     assert result["engine"] == "orderflow"
     assert result["bars"] == 30
+
+
+
+def _divergence_fixture(side, kind):
+    # 26 bars: a confirmed prior extreme, a penultimate divergence/absorption
+    # candle, and a final closed delta-flip confirmation candle.
+    n = 26
+    idx = pd.date_range("2026-01-01T00:00:00Z", periods=n, freq="1min")
+    close = np.full(n, 100.0)
+    high = np.full(n, 100.4)
+    low = np.full(n, 99.6)
+    delta = np.zeros(n)
+    # prior window local extreme at bar 18
+    if side == "LONG":
+        low[18] = 98.0
+        close[18] = 98.4
+        delta[18] = -10.0
+        if kind == "EXHAUSTION":
+            low[24] = 97.8
+            close[24] = 98.2
+            delta[24] = -2.0
+        else:
+            low[24] = 98.2
+            close[24] = 98.5
+            delta[24] = -30.0
+        delta[25] = 20.0
+        close[25] = 99.0
+    else:
+        high[18] = 102.0
+        close[18] = 101.6
+        delta[18] = 10.0
+        if kind == "EXHAUSTION":
+            high[24] = 102.2
+            close[24] = 101.8
+            delta[24] = 2.0
+        else:
+            high[24] = 101.8
+            close[24] = 101.5
+            delta[24] = 30.0
+        delta[25] = -20.0
+        close[25] = 101.0
+    open_ = close.copy()
+    open_[25] = close[25] - (0.2 if side == "LONG" else -0.2)
+    volume = np.full(n, 100.0)
+    frame = pd.DataFrame({
+        "open": open_, "high": high, "low": low, "close": close,
+        "volume_delta": delta, "tick_volume": volume,
+    }, index=idx)
+    # Keep earlier CVD values below/above the designated pivot in a controlled way.
+    if kind == "EXHAUSTION":
+        if side == "LONG":
+            delta[19:24] = 4.0
+            delta[24] = -2.0
+        else:
+            delta[19:24] = -4.0
+            delta[24] = 2.0
+    else:
+        if side == "LONG":
+            delta[19:24] = 0.0
+            delta[24] = -30.0
+        else:
+            delta[19:24] = 0.0
+            delta[24] = 30.0
+    frame["volume_delta"] = delta
+    return frame
+
+
+@pytest.mark.parametrize(("side", "kind"), [
+    ("LONG", "EXHAUSTION"), ("LONG", "ABSORPTION"),
+    ("SHORT", "EXHAUSTION"), ("SHORT", "ABSORPTION"),
+])
+def test_controlled_divergence_fixtures(side, kind):
+    frame = _divergence_fixture(side, kind)
+    result = evaluate_orderflow_trigger(frame, side)
+    assert result.action == "EXECUTE", result
+    assert result.side == side
+    assert result.metrics["cvd_divergence_type"] == kind
+
+
+def test_strict_real_delta_rejects_synthetic_bvc():
+    frame = bars(40)
+    result = evaluate_orderflow_trigger(frame, "LONG", strict_real_delta=True)
+    assert result.action == "NO_TRADE"
+    assert result.reason == "strict_real_delta_required"
+
+
+def test_delta_quality_and_source_are_explicit():
+    real = bars(5)
+    real["volume_delta"] = [1, -1, 2, -2, 3]
+    real_out = calculate_orderflow_features(real)
+    synthetic_out = calculate_orderflow_features(bars(5))
+    assert set(real_out["delta_source"]) == {"real_taker"}
+    assert set(real_out["delta_quality"]) == {"REAL"}
+    assert set(synthetic_out["delta_source"]) == {"synthetic_bvc"}
+    assert set(synthetic_out["delta_quality"]) == {"ESTIMATED"}
