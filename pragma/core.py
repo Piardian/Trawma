@@ -1,4 +1,4 @@
-"""CSV analysis and CLI dispatch for Trawma."""
+"""CSV pipeline analysis for Trawma's selectable engines."""
 from __future__ import annotations
 import argparse
 import json
@@ -8,43 +8,52 @@ import pandas as pd
 from .orderflow_engine import EngineMode, OrderFlowConfig, calculate_orderflow_features, detect_orderflow_pools
 
 
-def analyze_csv(path: Path, engine: EngineMode, symbol: str = "UNKNOWN") -> dict[str, Any]:
-    path = Path(path)
-    if not path.exists():
-        raise FileNotFoundError(path)
-    if engine == "amt":
-        raise NotImplementedError("Trawma AMT engine has not been implemented yet.")
-    if engine == "hybrid":
-        raise NotImplementedError("Hybrid requires the Trawma AMT POI provider; no silent fallback.")
-    data = pd.read_csv(path)
-    cfg = OrderFlowConfig()
-    features = calculate_orderflow_features(data, config=cfg)
-    pools = detect_orderflow_pools(data, config=cfg)
-    last = features.iloc[-1] if len(features) else None
-    return {
-        "symbol": symbol, "engine": engine, "bars": len(data),
-        "delta_source": str(last["delta_source"]) if last is not None else "empty",
-        "last_bar_delta": float(last["bar_delta"]) if last is not None else None,
-        "last_cvd": float(last["cvd"]) if last is not None else None,
-        "detected_pool_count": len(pools),
-        "pools": [{"kind": p.kind, "side": p.side, "level": p.level, "lower": p.lower,
-                   "upper": p.upper, "timestamp": str(p.timestamp), "source": p.source}
-                  for p in pools],
-        "note": "Feature/pool report only; not a trade-level backtest.",
+def analyze_csv(path: Path, engine: EngineMode, symbol: str = "UNKNOWN", strict_real_delta: bool = False) -> dict[str, Any]:
+    path=Path(path)
+    if not path.exists(): raise FileNotFoundError(path)
+    data=pd.read_csv(path)
+    if data.empty: raise ValueError("input data is empty")
+    cfg=OrderFlowConfig(strict_real_delta=strict_real_delta)
+    features=calculate_orderflow_features(data,config=cfg)
+    last=features.iloc[-1]
+    result={
+      "symbol":symbol,"engine":engine,"bars":len(data),
+      "delta_source":str(last["delta_source"]),"delta_quality":str(last["delta_quality"]),
+      "last_bar_delta":float(last["bar_delta"]),"last_cvd":float(last["cvd"]),
+      "last_delta_zscore":float(last["delta_zscore"]),
     }
+    if engine in ("orderflow","hybrid"):
+      pools=detect_orderflow_pools(data,config=cfg)
+      result["pools"]=[{"kind":p.kind,"side":p.side,"level":p.level,"lower":p.lower,"upper":p.upper,
+                        "timestamp":str(p.timestamp),"source":p.source} for p in pools]
+      result["detected_pool_count"]=len(pools)
+    if engine in ("amt","hybrid"):
+      from .amt_engine import calculate_volume_profile
+      from .vwap_engine import calculate_session_vwap
+      bars=data.copy()
+      if "tick_volume" not in bars:
+        if "volume" in bars: bars["tick_volume"]=bars["volume"]
+        else: raise ValueError("AMT/VWAP requires tick_volume or volume")
+      profile=calculate_volume_profile(bars[["high","low","close","tick_volume"]].tail(min(500,len(bars))),bins=50)
+      vwap=calculate_session_vwap(bars[["high","low","close","tick_volume"]]).iloc[-1]
+      result["amt"]={"pdPOC":profile.poc,"pdVAH":profile.vah,"pdVAL":profile.val,"pdLVN":list(profile.lvn_levels)}
+      result["vwap"]={"vwap":float(vwap["vwap"]),"sigma":float(vwap["sigma"]),
+        "bands":{k:float(vwap[k]) for k in vwap.index if "upper_" in k or "lower_" in k}}
+    result["note"]="Feature/POI report only; use backtest_engine.py for trade simulation."
+    return result
 
 
 def run_cli(description: str, argv=None) -> int:
-    parser = argparse.ArgumentParser(description=description)
-    parser.add_argument("--engine", choices=("amt", "orderflow", "hybrid"), default="amt")
-    parser.add_argument("--data", type=Path, required=True)
-    parser.add_argument("--symbol", default="UNKNOWN")
-    parser.add_argument("--output", type=Path)
-    args = parser.parse_args(argv)
-    report = analyze_csv(args.data, args.engine, args.symbol)
-    output = json.dumps(report, indent=2, default=str)
+    parser=argparse.ArgumentParser(description=description)
+    parser.add_argument("--engine",choices=("amt","orderflow","hybrid"),default="amt")
+    parser.add_argument("--data",type=Path,required=True)
+    parser.add_argument("--symbol",default="UNKNOWN")
+    parser.add_argument("--strict-real-delta",action="store_true")
+    parser.add_argument("--output",type=Path)
+    args=parser.parse_args(argv)
+    report=analyze_csv(args.data,args.engine,args.symbol,args.strict_real_delta)
+    output=json.dumps(report,indent=2,default=str)
     if args.output:
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(output + "\n", encoding="utf-8")
+      args.output.parent.mkdir(parents=True,exist_ok=True); args.output.write_text(output+"\n",encoding="utf-8")
     print(output)
     return 0
