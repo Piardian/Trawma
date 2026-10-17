@@ -37,7 +37,7 @@ def analyze_csv(path: Path, engine: EngineMode, symbol: str = "UNKNOWN", strict_
       profile=calculate_volume_profile(bars[["high","low","close","tick_volume"]].tail(min(500,len(bars))),bins=50)
       vwap=calculate_session_vwap(bars[["high","low","close","tick_volume"]]).iloc[-1]
       result["amt"]={"pdPOC":profile.poc,"pdVAH":profile.vah,"pdVAL":profile.val,"pdLVN":list(profile.lvn_levels)}
-      result["vwap"]={"vwap":float(vwap["vwap"]),"sigma":float(vwap["sigma"]),
+      result["vwap"]={"vwap":float(vwap["vwap"]),"sigma":float(vwap["vwap_sigma"]),
         "bands":{k:float(vwap[k]) for k in vwap.index if "upper_" in k or "lower_" in k}}
     result["note"]="Feature/POI report only; use backtest_engine.py for trade simulation."
     return result
