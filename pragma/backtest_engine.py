@@ -167,4 +167,7 @@ def simulate_walk_forward(frame: pd.DataFrame, *, symbol: str="UNKNOWN",
         pos.realized_r += pos.qty_remaining*gross - fee*(pos.entry+exit_price)*pos.qty_remaining/pos.risk
         trades.append({"entry_time":str(df.index[pos.entry_index]),"exit_time":str(ts),"side":pos.side,"net_r":pos.realized_r,"exit_reason":"END_OF_DATA","tp1_taken":pos.tp1_taken,"divergence_type":pos.divergence})
         funnel["end_of_data"]+=1
-    return _metrics(trades,funnel,symbol,engine)
+    report=_metrics(trades,funnel,symbol,engine)
+    report["bars_processed"]=len(df)
+    report["delta_source"]=str(features["delta_source"].iloc[-1]) if len(features) else "empty"
+    return report
