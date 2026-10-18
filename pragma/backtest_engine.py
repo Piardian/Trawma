@@ -13,7 +13,7 @@ import pandas as pd
 
 from .orderflow_engine import (
     OrderFlowConfig, calculate_orderflow_features, detect_orderflow_pools,
-    evaluate_orderflow_trigger,
+    evaluate_orderflow_trigger, btc_cvd_regime_filter,
 )
 
 @dataclass
@@ -34,7 +34,7 @@ class Position:
 def _metrics(trades: list[dict], funnel: dict, symbol: str, engine: str) -> dict[str, Any]:
     rs=np.array([t["net_r"] for t in trades],dtype=float)
     wins=rs[rs>0]; losses=rs[rs<0]
-    pf=float(wins.sum()/abs(losses.sum())) if len(losses) and abs(losses.sum()) else (float("inf") if len(wins) else 0.0)
+    pf=float(wins.sum()/abs(losses.sum())) if len(losses) and abs(losses.sum()) else (None if len(wins) else 0.0)
     equity=np.cumsum(rs)
     peak=np.maximum.accumulate(np.r_[0.0,equity])[1:] if len(equity) else np.array([])
     dd=peak-equity if len(equity) else np.array([])
@@ -62,7 +62,8 @@ def simulate_walk_forward(frame: pd.DataFrame, *, symbol: str="UNKNOWN",
                           engine: str="orderflow", strict_real_delta: bool=False,
                           fee_bps_per_side: float=4.0, funding_rate: float=0.0001,
                           atr_multiple: float=1.0, rr_tp1: float=1.0, rr_tp2: float=2.0,
-                          config: OrderFlowConfig|None=None) -> dict[str,Any]:
+                          config: OrderFlowConfig|None=None, ticks: pd.DataFrame|None=None,
+                          btc_frame: pd.DataFrame|None=None) -> dict[str,Any]:
     if engine not in {"amt","orderflow","hybrid"}: raise ValueError("engine must be amt, orderflow, or hybrid")
     if len(frame)<100: raise ValueError("at least 100 bars required for walk-forward simulation")
     cfg=config or OrderFlowConfig(strict_real_delta=strict_real_delta)
@@ -76,10 +77,29 @@ def simulate_walk_forward(frame: pd.DataFrame, *, symbol: str="UNKNOWN",
     df=df.sort_index()
     if "volume_delta" not in df and "tick_volume" not in df and "volume" not in df:
         raise ValueError("need real volume_delta or volume/tick_volume")
-    features=calculate_orderflow_features(df,config=cfg)
-    funnel={"bars_seen":0,"poi_touch":0,"divergence":0,"delta_flip":0,"cost_veto":0,"entries":0,"stop_exits":0,"tp1":0,"tp2":0,"end_of_data":0,"strict_delta_veto":0}
+    features=calculate_orderflow_features(df,ticks=ticks,config=cfg)
+    funnel={"bars_seen":0,"poi_touch":0,"divergence":0,"delta_flip":0,"cost_veto":0,"entries":0,"stop_exits":0,"tp1":0,"tp2":0,"end_of_data":0,"strict_delta_veto":0,"exhaustion_veto":0,"inactive_hours_veto":0,"low_volume_day_veto":0,"btc_regime_veto":0}
     trades=[]; pos=None
     fee=max(0.0,fee_bps_per_side)/10000.0
+    # Precompute day-volume guard causally: current day compares with the prior five completed days.
+    day_allowed = pd.Series(True, index=df.index)
+    if cfg.filter_low_volume_days and isinstance(df.index, pd.DatetimeIndex):
+        day_keys = pd.Series(df.index.normalize(), index=df.index)
+        if "volume" in df: volume_col = "volume"
+        elif "tick_volume" in df: volume_col = "tick_volume"
+        else: volume_col = None
+        if volume_col:
+            daily = df[volume_col].groupby(day_keys).sum()
+            baseline = daily.shift(1).rolling(5, min_periods=5).mean()
+            ratio = daily / baseline.replace(0, np.nan)
+            for day in daily.index:
+                weekday = day.weekday() < 5
+                good_volume = bool(pd.notna(ratio.loc[day]) and ratio.loc[day] >= 0.70)
+                day_allowed.loc[day_keys == day] = weekday and good_volume
+    btc_regimes = None
+    if btc_frame is not None:
+        btc_regimes = btc_cvd_regime_filter(btc_frame, config=cfg)
+    is_alt = symbol.upper().replace("/", "").replace("-", "") not in {"BTCUSDT", "BTCUSD", "BTC"}
     for i in range(50,len(df)-1):
         bar=df.iloc[i]; nextbar=df.iloc[i+1]; ts=df.index[i]
         funnel["bars_seen"]+=1
@@ -109,8 +129,18 @@ def simulate_walk_forward(frame: pd.DataFrame, *, symbol: str="UNKNOWN",
                 trades.append({"entry_time":str(df.index[pos.entry_index]),"exit_time":str(ts),"side":pos.side,"net_r":pos.realized_r,"exit_reason":"TP2","tp1_taken":True,"divergence_type":pos.divergence})
                 funnel["tp2"]+=1; pos=None
             if pos is not None: continue
-        # Prefix-only signal calculation prevents look-ahead.
-        prefix=df.iloc[:i+1]
+        # Session and liquidity gates are evaluated before any new signal.
+        if isinstance(df.index, pd.DatetimeIndex):
+            hour = int(ts.hour)
+            h0, h1 = cfg.active_hours_utc
+            if not (h0 <= hour < h1 if h0 < h1 else hour >= h0 or hour < h1):
+                funnel["inactive_hours_veto"] += 1
+                continue
+            if not bool(day_allowed.iloc[i]):
+                funnel["low_volume_day_veto"] += 1
+                continue
+        # Bounded causal window prevents quadratic recomputation on 100k-bar runs.
+        prefix=df.iloc[max(0, i-max(cfg.pool_lookback, cfg.delta_lookback*2, 100)):i+1]
         atr=float(features.atr_14.iloc[i])
         if not np.isfinite(atr) or atr<=0: continue
         side=None; decision=None; div="UNKNOWN"
@@ -137,7 +167,7 @@ def simulate_walk_forward(frame: pd.DataFrame, *, symbol: str="UNKNOWN",
                     if hit: side,level=hit[-1]; poi={"level":level,"lower":level-0.25*atr,"upper":level+0.25*atr}
                 except (ValueError,KeyError,TypeError): side=None
             if side:
-                decision=evaluate_orderflow_trigger(prefix,side,poi=poi,config=cfg,strict_real_delta=strict_real_delta)
+                decision=evaluate_orderflow_trigger(prefix,side,poi=poi,ticks=(ticks.loc[(ticks.index >= prefix.index[0]) & (ticks.index <= prefix.index[-1])] if ticks is not None and isinstance(ticks.index,pd.DatetimeIndex) else None),config=cfg,strict_real_delta=strict_real_delta)
                 if decision.action=="EXECUTE":
                     div=str(decision.metrics.get("cvd_divergence_type") or "UNKNOWN"); funnel["divergence"]+=1; funnel["delta_flip"]+=1
                 else:
@@ -152,6 +182,16 @@ def simulate_walk_forward(frame: pd.DataFrame, *, symbol: str="UNKNOWN",
             if z<=-2.0: side="LONG"
             elif z>=2.0: side="SHORT"
         if side not in ("LONG","SHORT"): continue
+        if is_alt and engine in ("orderflow", "hybrid"):
+            if btc_regimes is None:
+                funnel["btc_regime_veto"] += 1
+                continue
+            eligible = btc_regimes.loc[btc_regimes.index <= ts]
+            regime = str(eligible.iloc[-1]) if not eligible.empty else "NEUTRAL"
+            if not ((side == "LONG" and regime == "IMBALANCE_BULL") or
+                    (side == "SHORT" and regime == "IMBALANCE_BEAR")):
+                funnel["btc_regime_veto"] += 1
+                continue
         entry=float(nextbar.open)
         risk=max(atr*atr_multiple,entry*fee*2.5)
         stop=entry-risk if side=="LONG" else entry+risk
@@ -169,5 +209,9 @@ def simulate_walk_forward(frame: pd.DataFrame, *, symbol: str="UNKNOWN",
         funnel["end_of_data"]+=1
     report=_metrics(trades,funnel,symbol,engine)
     report["bars_processed"]=len(df)
+    report["absorption_only"] = not cfg.allow_exhaustion
+    report["active_hours_utc"] = list(cfg.active_hours_utc)
+    report["low_volume_day_filter"] = cfg.filter_low_volume_days
+    report["btc_cvd_regime_filter"] = bool(is_alt and engine in ("orderflow", "hybrid"))
     report["delta_source"]=str(features["delta_source"].iloc[-1]) if len(features) else "empty"
     return report
