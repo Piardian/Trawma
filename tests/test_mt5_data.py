@@ -14,7 +14,7 @@ def test_mt5_closed_bar_filter_uses_utc_bar_open_time():
     )
     out = filter_closed_bars(bars, "M1", now=pd.Timestamp("2026-01-01T12:01:00Z"))
     assert len(out) == 2
-    out = filter_closed_bars(bars, "M5", now=pd.Timestamp("2026-01-01T12:01:00Z"))
+    out = filter_closed_bars(bars, "M5", now=pd.Timestamp("2026-01-01T12:04:00Z"))
     assert len(out) == 1
 
 
