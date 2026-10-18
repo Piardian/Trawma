@@ -156,7 +156,10 @@ def simulate_walk_forward(frame: pd.DataFrame, *, symbol: str="UNKNOWN",
                 touched=[p for p in pools if float(bar.low)<=p.upper and float(bar.high)>=p.lower]
                 if touched:
                     funnel["poi_touch"]+=1
-                    pool=touched[-1]; side=pool.side if pool.side in ("LONG","SHORT") else None; poi=pool
+                    pool=next((p for p in reversed(touched) if p.side in ("LONG","SHORT")), None)
+                    if pool is not None:
+                        side=pool.side
+                        poi=pool
             else:
                 # Hybrid POIs are AMT/VWAP reference levels calculated on the observed prefix only.
                 from .amt_engine import calculate_volume_profile
