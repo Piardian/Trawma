@@ -174,7 +174,7 @@ def test_controlled_divergence_fixtures(side, kind):
     result = evaluate_orderflow_trigger(frame, side)
     if kind == "EXHAUSTION":
         assert result.action == "NO_TRADE", result
-        assert result.reason == "no_cvd_divergence_or_absorption"
+        assert result.reason == "exhaustion_disabled"
     else:
         assert result.action == "EXECUTE", result
         assert result.side == side
