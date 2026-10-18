@@ -106,6 +106,13 @@ def simulate_walk_forward(frame: pd.DataFrame, *, symbol: str="UNKNOWN",
         btc_regimes = btc_cvd_regime_filter(btc_frame, config=cfg)
     normalized_symbol = symbol.upper().replace("/", "").replace("-", "").replace("_", "")
     is_alt = normalized_symbol.endswith("USDT") and normalized_symbol not in {"BTCUSDT"}
+    vwap_values = None
+    if engine == "hybrid":
+        tv = df["tick_volume"] if "tick_volume" in df else df["volume"] if "volume" in df else pd.Series(1.0, index=df.index)
+        pr = (df["high"].astype(float) + df["low"].astype(float) + df["close"].astype(float)) / 3.0
+        cum_vol = tv.astype(float).cumsum().to_numpy()
+        cum_pv = (pr * tv.astype(float)).cumsum().to_numpy()
+        vwap_values = np.where(cum_vol > 0, cum_pv / cum_vol, np.nan)
     for i in range(50,len(df)-1):
         bar=df.iloc[i]; nextbar=df.iloc[i+1]; ts=df.index[i]
         funnel["bars_seen"]+=1
@@ -164,14 +171,11 @@ def simulate_walk_forward(frame: pd.DataFrame, *, symbol: str="UNKNOWN",
             else:
                 # Hybrid POIs are AMT/VWAP reference levels calculated on the observed prefix only.
                 from .amt_engine import calculate_volume_profile
-                from .vwap_engine import calculate_session_vwap
-                prof_bars=prefix.copy()
-                if "tick_volume" not in prof_bars:
-                    prof_bars["tick_volume"]=prof_bars["volume"] if "volume" in prof_bars else 0.0
+                prof_bars=prefix
                 try:
                     vp=calculate_volume_profile(prof_bars[["high","low","close","tick_volume"]].tail(min(500,len(prof_bars))),bins=50)
-                    vwap=calculate_session_vwap(prof_bars[["high","low","close","tick_volume"]]).iloc[-1]
-                    candidates=[("LONG",vp.val),("SHORT",vp.vah),("LONG",float(vwap["vwap"])),("SHORT",float(vwap["vwap"]))]
+                    vwap_val=float(vwap_values[i]) if vwap_values is not None else float((bar.high+bar.low+bar.close)/3.0)
+                    candidates=[("LONG",vp.val),("SHORT",vp.vah),("LONG",vwap_val),("SHORT",vwap_val)]
                     hit=[(s,l) for s,l in candidates if abs(float(bar.close)-l)<=0.35*atr]
                     if hit: side,level=hit[-1]; poi={"level":level,"lower":level-0.25*atr,"upper":level+0.25*atr}
                 except (ValueError,KeyError,TypeError): side=None

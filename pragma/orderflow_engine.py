@@ -108,12 +108,12 @@ def _tick_rule(ticks: pd.DataFrame, bars: pd.DataFrame) -> pd.Series:
     return pd.Series(sums,index=bars.index,name="bar_delta")
 
 def calculate_orderflow_features(frame: pd.DataFrame, *, ticks: pd.DataFrame|None=None, config: OrderFlowConfig|None=None) -> pd.DataFrame:
-    cfg=config or OrderFlowConfig()
-    df=_normalise(frame)
-    # Reuse causal precomputed features in the walk-forward loop; this avoids
-    # recomputing rolling statistics for every prefix of a 100k-bar dataset.
     prepared = {"bar_delta", "cvd", "delta_abs_mean_20", "delta_zscore",
                 "atr_14", "vol_sma_20", "delta_source", "delta_quality"}
+    if prepared.issubset(frame.columns):
+        return frame
+    cfg=config or OrderFlowConfig()
+    df=_normalise(frame)
     if prepared.issubset(df.columns):
         return df
     if df.empty:
@@ -163,14 +163,18 @@ def detect_orderflow_pools(frame: pd.DataFrame, *, config: OrderFlowConfig|None=
     pools=[]
     left,right=max(1,cfg.swing_left),max(1,cfg.swing_right)
     start=max(left,len(df)-cfg.pool_lookback); end=len(df)-right
+    lows=df["low"].to_numpy(dtype=float)
+    highs=df["high"].to_numpy(dtype=float)
+    atrs=df["atr_14"].to_numpy(dtype=float)
+    idx=df.index
     for i in range(start,max(start,end)):
-        lo,hi=float(df.low.iloc[i]),float(df.high.iloc[i])
-        if len(df.low.iloc[i-left:i])!=left or len(df.low.iloc[i+1:i+right+1])!=right: continue
-        atr=float(df.atr_14.iloc[i]); w=max(0,mult*atr)
-        if lo<=df.low.iloc[i-left:i].min() and lo<df.low.iloc[i+1:i+right+1].min():
-            pools.append(LiquidityPool("SWING_LOW","LONG",lo,lo-w,lo+w,df.index[i],"confirmed_swing",metadata={"pivot_index":i}))
-        if hi>=df.high.iloc[i-left:i].max() and hi>df.high.iloc[i+1:i+right+1].max():
-            pools.append(LiquidityPool("SWING_HIGH","SHORT",hi,hi-w,hi+w,df.index[i],"confirmed_swing",metadata={"pivot_index":i}))
+        if i-left < 0 or i+1+right > len(lows): continue
+        lo,hi=lows[i],highs[i]
+        atr=atrs[i]; w=max(0,mult*atr)
+        if lo<=np.min(lows[i-left:i]) and lo<np.min(lows[i+1:i+right+1]):
+            pools.append(LiquidityPool("SWING_LOW","LONG",lo,lo-w,lo+w,idx[i],"confirmed_swing",metadata={"pivot_index":i}))
+        if hi>=np.max(highs[i-left:i]) and hi>np.max(highs[i+1:i+right+1]):
+            pools.append(LiquidityPool("SWING_HIGH","SHORT",hi,hi-w,hi+w,idx[i],"confirmed_swing",metadata={"pivot_index":i}))
     levels=dict(previous_session_levels or {})
     if not levels and isinstance(df.index,pd.DatetimeIndex) and len(df)>1:
         keys=pd.Series(df.index.date,index=df.index)
