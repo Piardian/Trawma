@@ -43,7 +43,7 @@ def _load_data(args):
 def main(argv=None) -> int:
     parser=argparse.ArgumentParser(description="Trawma walk-forward trade simulator")
     parser.add_argument("--engine",choices=("amt","orderflow","hybrid"),default="orderflow")
-    parser.add_argument("--source",choices=("binance","mt5","csv"),default="binance")
+    parser.add_argument("--source",choices=("binance","mt5","csv"),default=None)
     parser.add_argument("--data",type=Path,help="CSV path; required when --source csv")
     parser.add_argument("--symbol",default="BTCUSDT")
     parser.add_argument("--timeframe",choices=("M1","M5","M15","M30","H1","H4","D1"),default="M1")
@@ -55,6 +55,7 @@ def main(argv=None) -> int:
     parser.add_argument("--funding-rate",type=float,default=0.0001)
     parser.add_argument("--output",type=Path)
     args=parser.parse_args(argv)
+    args.source = args.source or ("csv" if args.data else "binance")
     frame, ticks, btc = _load_data(args)
     report=simulate_walk_forward(frame,symbol=args.symbol,engine=args.engine,
         strict_real_delta=args.strict_real_delta,fee_bps_per_side=args.fee_bps_per_side,
