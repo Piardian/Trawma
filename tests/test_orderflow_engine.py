@@ -194,7 +194,7 @@ def test_delta_quality_and_source_are_explicit():
     real_out = calculate_orderflow_features(real)
     synthetic_out = calculate_orderflow_features(bars(5))
     assert set(real_out["delta_source"]) == {"real_taker"}
-    assert set(real_out["delta_quality"]) == {"REAL"}
+    assert set(real_out["delta_quality"]) == {"REAL_TAKER"}
     assert set(synthetic_out["delta_source"]) == {"synthetic_bvc"}
     assert set(synthetic_out["delta_quality"]) == {"ESTIMATED"}
 
