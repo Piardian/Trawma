@@ -63,7 +63,7 @@ def run_cli(description: str, argv=None) -> int:
       import tempfile
       if args.source=="binance":
         from .data.binance_data import BinanceDataClient, filter_closed_bars
-        with BinanceDataClient() as client: data=client.rates(args.symbol,args.timeframe,count=args.count)
+        with BinanceDataClient(futures_only=True) as client: data=client.rates(args.symbol,args.timeframe,count=args.count)
         data=filter_closed_bars(data,args.timeframe)
       else:
         from .data.mt5_data import MT5DataClient, filter_closed_bars
