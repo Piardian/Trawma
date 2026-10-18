@@ -81,7 +81,8 @@ def simulate_walk_forward(frame: pd.DataFrame, *, symbol: str="UNKNOWN",
     funnel={"bars_seen":0,"poi_touch":0,"divergence":0,"delta_flip":0,"cost_veto":0,"entries":0,"stop_exits":0,"tp1":0,"tp2":0,"end_of_data":0,"strict_delta_veto":0,"exhaustion_veto":0,"inactive_hours_veto":0,"low_volume_day_veto":0,"btc_regime_veto":0}
     trades=[]; pos=None
     fee=max(0.0,fee_bps_per_side)/10000.0
-    # Precompute day-volume guard causally: current day compares with the prior five completed days.
+    # Causal intraday activity guard: compare cumulative volume pace with the
+    # previous five completed UTC days; never use the eventual current-day total.
     day_allowed = pd.Series(True, index=df.index)
     if cfg.filter_low_volume_days and isinstance(df.index, pd.DatetimeIndex):
         day_keys = pd.Series(df.index.normalize(), index=df.index)
@@ -91,11 +92,15 @@ def simulate_walk_forward(frame: pd.DataFrame, *, symbol: str="UNKNOWN",
         if volume_col:
             daily = df[volume_col].groupby(day_keys).sum()
             baseline = daily.shift(1).rolling(5, min_periods=5).mean()
-            ratio = daily / baseline.replace(0, np.nan)
+            day_allowed[:] = False
             for day in daily.index:
-                weekday = day.weekday() < 5
-                good_volume = bool(pd.notna(ratio.loc[day]) and ratio.loc[day] >= 0.70)
-                day_allowed.loc[day_keys == day] = weekday and good_volume
+                rows = df.index.normalize() == day
+                if day.weekday() >= 5 or pd.isna(baseline.loc[day]) or baseline.loc[day] <= 0:
+                    continue
+                cumulative = df.loc[rows, volume_col].fillna(0).clip(lower=0).cumsum()
+                elapsed_fraction = ((df.index[rows] - day).total_seconds() / 86400.0).clip(0.0, 1.0)
+                pace_threshold = 0.70 * float(baseline.loc[day]) * elapsed_fraction
+                day_allowed.loc[rows] = cumulative.to_numpy() >= pace_threshold
     btc_regimes = None
     if btc_frame is not None:
         btc_regimes = btc_cvd_regime_filter(btc_frame, config=cfg)
