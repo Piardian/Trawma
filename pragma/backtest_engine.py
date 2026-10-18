@@ -180,6 +180,7 @@ def simulate_walk_forward(frame: pd.DataFrame, *, symbol: str="UNKNOWN",
                     div=str(decision.metrics.get("cvd_divergence_type") or "UNKNOWN"); funnel["divergence"]+=1; funnel["delta_flip"]+=1
                 else:
                     if decision.reason=="strict_real_delta_required": funnel["strict_delta_veto"]+=1
+                    if decision.reason=="exhaustion_disabled": funnel["exhaustion_veto"]+=1
                     side=None
         else:
             # AMT-only control: causal z-score excursion from rolling typical-price mean.
