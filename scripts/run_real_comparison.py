@@ -33,7 +33,7 @@ def main():
     a=p.parse_args()
     if a.count<100000: raise SystemExit("--count must be >= 100000 for the requested benchmark")
     reports=[]
-    with BinanceDataClient(cache_dir=a.cache_dir) as client:
+    with BinanceDataClient(cache_dir=a.cache_dir, futures_only=True) as client:
         btc_m1=client.rates("BTCUSDT","M1",count=a.count)
         if len(btc_m1)<a.count:
             raise RuntimeError(f"BTCUSDT: requested {a.count} closed M1 bars, received {len(btc_m1)}")
