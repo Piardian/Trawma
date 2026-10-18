@@ -146,7 +146,7 @@ def simulate_walk_forward(frame: pd.DataFrame, *, symbol: str="UNKNOWN",
                 funnel["low_volume_day_veto"] += 1
                 continue
         # Bounded causal window prevents quadratic recomputation on 100k-bar runs.
-        prefix=df.iloc[max(0, i-max(cfg.pool_lookback, cfg.delta_lookback*2, 100)):i+1]
+        prefix=features.iloc[max(0, i-max(cfg.pool_lookback, cfg.delta_lookback*2, 100)):i+1]
         atr=float(features.atr_14.iloc[i])
         if not np.isfinite(atr) or atr<=0: continue
         side=None; decision=None; div="UNKNOWN"
