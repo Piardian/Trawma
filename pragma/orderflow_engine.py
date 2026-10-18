@@ -187,6 +187,27 @@ def detect_orderflow_pools(frame: pd.DataFrame, *, config: OrderFlowConfig|None=
             pools.append(LiquidityPool("ABSORPTION_NODE","BOTH",level,level-w,level+w,idx,"high_volume_narrow_body",float(row[vc]),{"bar_delta":float(row.bar_delta),"cvd":float(row.cvd)}))
     return pools
 
+def btc_cvd_regime_filter(frame: pd.DataFrame, *, config: OrderFlowConfig | None = None) -> pd.Series:
+    """Causal BTC leadership regime from rolling price and CVD direction.
+
+    The regime is directional only when BTC price change and taker-delta CVD
+    agree over the same lookback; ambiguous regimes intentionally fail closed.
+    """
+    cfg = config or OrderFlowConfig()
+    features = calculate_orderflow_features(frame, config=cfg)
+    if features.empty:
+        return pd.Series(dtype="object", index=features.index, name="btc_regime")
+    lookback = max(5, int(cfg.delta_lookback))
+    price_change = features["close"].pct_change(lookback)
+    cvd_change = features["bar_delta"].rolling(lookback, min_periods=lookback).sum()
+    bull = (price_change > 0) & (cvd_change > 0)
+    bear = (price_change < 0) & (cvd_change < 0)
+    regime = pd.Series("NEUTRAL", index=features.index, dtype="object", name="btc_regime")
+    regime.loc[bull] = "IMBALANCE_BULL"
+    regime.loc[bear] = "IMBALANCE_BEAR"
+    return regime
+
+
 def _metrics(df):
     if df.empty: return {"bar_delta":0.0,"cvd_value":0.0,"delta_zscore":0.0}
     x=df.iloc[-1]
