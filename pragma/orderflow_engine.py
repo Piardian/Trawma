@@ -14,16 +14,19 @@ class OrderFlowConfig:
     delta_lookback: int = 20
     atr_period: int = 14
     volume_sma_period: int = 20
-    swing_left: int = 5
-    swing_right: int = 5
+    swing_left: int = 10
+    swing_right: int = 10
     pool_lookback: int = 100
-    volume_spike_multiple: float = 2.2
+    volume_spike_multiple: float = 2.5
     narrow_body_atr_multiple: float = 0.25
     poi_atr_multiplier: float = 0.25
     divergence_lookback: int = 15
     sweep_lookback: int = 3
     absorption_delta_multiple: float = 1.5
-    flip_delta_multiple: float = 0.8
+    flip_delta_multiple: float = 1.0
+    allow_exhaustion: bool = False
+    active_hours_utc: tuple[int, int] = (8, 22)
+    filter_low_volume_days: bool = True
     require_delta_source: bool = True
     strict_real_delta: bool = False
 
@@ -54,7 +57,7 @@ def _normalise(frame: pd.DataFrame) -> pd.DataFrame:
         raise TypeError("frame must be a pandas DataFrame")
     df = frame.copy()
     names = {}
-    valid = {"open","high","low","close","volume","tick_volume","volume_delta","timestamp","time","session","price","tick_price","bid","ask"}
+    valid = {"open","high","low","close","volume","tick_volume","volume_delta","timestamp","time","session","price","tick_price","last","bid","ask"}
     for c in df.columns:
         k = str(c).strip().lower().replace(" ","_")
         if k in valid: names[c] = k
@@ -85,18 +88,18 @@ def _tick_rule(ticks: pd.DataFrame, bars: pd.DataFrame) -> pd.Series:
     cols={}
     for c in t.columns:
         k=str(c).strip().lower().replace(" ","_")
-        if k in {"timestamp","time","price","tick_price","volume","tick_volume"}: cols[c]=k
+        if k in {"timestamp","time","price","tick_price","last","volume","tick_volume","volume_real"}: cols[c]=k
     t=t.rename(columns=cols)
     if "timestamp" in t.columns: t.index=pd.to_datetime(t.pop("timestamp"),utc=True,errors="coerce")
     elif "time" in t.columns and not isinstance(t.index,pd.DatetimeIndex): t.index=pd.to_datetime(t.pop("time"),utc=True,errors="coerce")
     if not isinstance(t.index,pd.DatetimeIndex): raise ValueError("ticks need timestamp or DatetimeIndex")
     t.index=t.index.tz_localize("UTC") if t.index.tz is None else t.index.tz_convert("UTC")
-    pc="price" if "price" in t else "tick_price" if "tick_price" in t else None
+    pc="price" if "price" in t else "tick_price" if "tick_price" in t else "last" if "last" in t else None
     if pc is None: raise ValueError("ticks need price or tick_price")
     t=t.sort_index()
     move=pd.to_numeric(t[pc],errors="coerce").diff()
     sign=np.sign(move).replace(0,np.nan).ffill().fillna(0.0)
-    vc="volume" if "volume" in t else "tick_volume" if "tick_volume" in t else None
+    vc="volume_real" if "volume_real" in t else "volume" if "volume" in t else "tick_volume" if "tick_volume" in t else None
     vol=pd.to_numeric(t[vc],errors="coerce").fillna(1.0) if vc else pd.Series(1.0,index=t.index)
     positions=bars.index.get_indexer(t.index,method="pad")
     valid=positions>=0
@@ -143,7 +146,7 @@ def calculate_orderflow_features(frame: pd.DataFrame, *, ticks: pd.DataFrame|Non
     vc="tick_volume" if "tick_volume" in df else "volume" if "volume" in df else None
     df["vol_sma_20"]=df[vc].rolling(max(1,cfg.volume_sma_period),min_periods=1).mean() if vc else np.nan
     df["delta_source"]=source
-    df["delta_quality"]="REAL" if source in ("real_taker","tick_rule") else "ESTIMATED"
+    df["delta_quality"]="REAL_TAKER" if source=="real_taker" else "TICK_ESTIMATE" if source=="tick_rule" else "ESTIMATED"
     return df
 
 def detect_orderflow_pools(frame: pd.DataFrame, *, config: OrderFlowConfig|None=None, profile: Any|None=None, previous_session_levels: Mapping[str,float]|None=None) -> list[LiquidityPool]:
@@ -198,6 +201,11 @@ def evaluate_orderflow_trigger(frame: pd.DataFrame, side: str, *, poi: Liquidity
     if strict and str(df.delta_source.iloc[-1]) not in ("real_taker", "tick_rule"):
         return TriggerDecision("NO_TRADE", reason="strict_real_delta_required", metrics={**_metrics(df), "delta_quality": "ESTIMATED"})
     if not session_allowed: return TriggerDecision("NO_TRADE",reason="session_veto")
+    if isinstance(df.index, pd.DatetimeIndex):
+        hour = int(df.index[-1].hour)
+        start_hour, end_hour = cfg.active_hours_utc
+        active = (start_hour <= hour < end_hour) if start_hour < end_hour else (hour >= start_hour or hour < end_hour)
+        if not active: return TriggerDecision("NO_TRADE", reason="inactive_liquidity_hours", metrics=_metrics(df))
     if poi is not None:
         if isinstance(poi,LiquidityPool): lo,hi=poi.lower,poi.upper
         else:
@@ -216,19 +224,21 @@ def evaluate_orderflow_trigger(frame: pd.DataFrame, side: str, *, poi: Liquidity
         poi_lower=(poi.lower if isinstance(poi,LiquidityPool) else (poi.get("lower",poi.get("low")) if poi else None))
         held=float(candidate.close)>extreme or (poi_lower is not None and float(candidate.close)>float(poi_lower))
         d=df.bar_delta.iloc[max(0,len(df)-4):-1]; avg=df.delta_abs_mean_20.iloc[max(0,len(df)-4):-1]
-        absorption=(cvd2<cvd1 or bool((d < -cfg.absorption_delta_multiple*avg).any())) and held
-        mid=(float(candidate.high)+float(candidate.low))/2
-        flip=float(trigger.bar_delta)>0 and (float(trigger.bar_delta)>=cfg.flip_delta_multiple*float(trigger.delta_abs_mean_20) or float(trigger.close)>mid)
+        aggressive_sell = bool((d <= -cfg.absorption_delta_multiple * avg).any())
+        absorption = aggressive_sell and held
+        flip = (float(trigger.bar_delta) >= cfg.flip_delta_multiple * float(trigger.delta_abs_mean_20)
+                and float(trigger.close) > float(trigger.open))
     else:
         pos=prior_start+int(np.argmax(prior.high.to_numpy())); extreme=float(df.high.iloc[pos]); cvd1=float(df.cvd.iloc[pos])
         cvd2=float(candidate.cvd); exhaustion=float(candidate.high)>=extreme and cvd2<cvd1
         poi_upper=(poi.upper if isinstance(poi,LiquidityPool) else (poi.get("upper",poi.get("high")) if poi else None))
         held=float(candidate.close)<extreme or (poi_upper is not None and float(candidate.close)<float(poi_upper))
         d=df.bar_delta.iloc[max(0,len(df)-4):-1]; avg=df.delta_abs_mean_20.iloc[max(0,len(df)-4):-1]
-        absorption=(cvd2>cvd1 or bool((d > cfg.absorption_delta_multiple*avg).any())) and held
-        mid=(float(candidate.high)+float(candidate.low))/2
-        flip=float(trigger.bar_delta)<0 and (float(trigger.bar_delta)<=-cfg.flip_delta_multiple*float(trigger.delta_abs_mean_20) or float(trigger.close)<mid)
-    kind="EXHAUSTION" if exhaustion else "ABSORPTION" if absorption else None
+        aggressive_buy = bool((d >= cfg.absorption_delta_multiple * avg).any())
+        absorption = aggressive_buy and held
+        flip = (float(trigger.bar_delta) <= -cfg.flip_delta_multiple * float(trigger.delta_abs_mean_20)
+                and float(trigger.close) < float(trigger.open))
+    kind=("ABSORPTION" if absorption else "EXHAUSTION" if exhaustion and cfg.allow_exhaustion else None)
     metrics={**_metrics(df),"cvd_divergence_type":kind,"prior_extreme_index":pos,"prior_cvd":cvd1,"candidate_cvd":cvd2}
     if kind is None: return TriggerDecision("NO_TRADE",reason="no_cvd_divergence_or_absorption",metrics=metrics)
     if not flip: return TriggerDecision("NO_TRADE",reason="delta_flip_missing",metrics=metrics)
