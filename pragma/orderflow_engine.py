@@ -110,6 +110,12 @@ def _tick_rule(ticks: pd.DataFrame, bars: pd.DataFrame) -> pd.Series:
 def calculate_orderflow_features(frame: pd.DataFrame, *, ticks: pd.DataFrame|None=None, config: OrderFlowConfig|None=None) -> pd.DataFrame:
     cfg=config or OrderFlowConfig()
     df=_normalise(frame)
+    # Reuse causal precomputed features in the walk-forward loop; this avoids
+    # recomputing rolling statistics for every prefix of a 100k-bar dataset.
+    prepared = {"bar_delta", "cvd", "delta_abs_mean_20", "delta_zscore",
+                "atr_14", "vol_sma_20", "delta_source", "delta_quality"}
+    if prepared.issubset(df.columns):
+        return df
     if df.empty:
         for c in ("bar_delta","cvd","delta_abs_mean_20","delta_zscore","atr_14","vol_sma_20","delta_source","delta_quality"): df[c]=pd.Series(dtype="object" if c=="delta_source" else float,index=df.index)
         return df
