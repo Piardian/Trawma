@@ -261,7 +261,9 @@ def evaluate_orderflow_trigger(frame: pd.DataFrame, side: str, *, poi: Liquidity
                 and float(trigger.close) < float(trigger.open))
     kind=("ABSORPTION" if absorption else "EXHAUSTION" if exhaustion and cfg.allow_exhaustion else None)
     metrics={**_metrics(df),"cvd_divergence_type":kind,"prior_extreme_index":pos,"prior_cvd":cvd1,"candidate_cvd":cvd2}
-    if kind is None: return TriggerDecision("NO_TRADE",reason="no_cvd_divergence_or_absorption",metrics=metrics)
+    if kind is None:
+        reason = "exhaustion_disabled" if exhaustion and not cfg.allow_exhaustion else "no_cvd_divergence_or_absorption"
+        return TriggerDecision("NO_TRADE", reason=reason, metrics=metrics)
     if not flip: return TriggerDecision("NO_TRADE",reason="delta_flip_missing",metrics=metrics)
     if spread is not None and stop_distance is not None and (stop_distance<=0 or spread<0 or spread/stop_distance>max_spread_to_sl):
         return TriggerDecision("NO_TRADE",reason="spread_to_sl_veto",metrics=metrics)
