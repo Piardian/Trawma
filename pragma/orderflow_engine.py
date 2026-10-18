@@ -29,6 +29,9 @@ class OrderFlowConfig:
     filter_low_volume_days: bool = True
     require_delta_source: bool = True
     strict_real_delta: bool = False
+    max_hold_bars: int = 16
+    friday_entry_cutoff_utc: tuple[int, int] = (20, 30)
+    friday_exit_cutoff_utc: tuple[int, int] = (21, 30)
 
 @dataclass(frozen=True)
 class LiquidityPool:

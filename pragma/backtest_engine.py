@@ -63,7 +63,8 @@ def simulate_walk_forward(frame: pd.DataFrame, *, symbol: str="UNKNOWN",
                           fee_bps_per_side: float=4.0, funding_rate: float=0.0001,
                           atr_multiple: float=1.0, rr_tp1: float=1.0, rr_tp2: float=2.0,
                           config: OrderFlowConfig|None=None, ticks: pd.DataFrame|None=None,
-                          btc_frame: pd.DataFrame|None=None) -> dict[str,Any]:
+                          btc_frame: pd.DataFrame|None=None,
+                          macro_bias: int|None=None) -> dict[str,Any]:
     if engine not in {"amt","orderflow","hybrid"}: raise ValueError("engine must be amt, orderflow, or hybrid")
     if len(frame)<100: raise ValueError("at least 100 bars required for walk-forward simulation")
     cfg=config or OrderFlowConfig(strict_real_delta=strict_real_delta)
@@ -78,7 +79,7 @@ def simulate_walk_forward(frame: pd.DataFrame, *, symbol: str="UNKNOWN",
     if "volume_delta" not in df and "tick_volume" not in df and "volume" not in df:
         raise ValueError("need real volume_delta or volume/tick_volume")
     features=calculate_orderflow_features(df,ticks=ticks,config=cfg)
-    funnel={"bars_seen":0,"poi_touch":0,"divergence":0,"delta_flip":0,"cost_veto":0,"entries":0,"stop_exits":0,"tp1":0,"tp2":0,"end_of_data":0,"strict_delta_veto":0,"exhaustion_veto":0,"inactive_hours_veto":0,"low_volume_day_veto":0,"btc_regime_veto":0}
+    funnel={"bars_seen":0,"poi_touch":0,"divergence":0,"delta_flip":0,"cost_veto":0,"entries":0,"stop_exits":0,"tp1":0,"tp2":0,"time_stop":0,"weekend_close":0,"weekend_entry_veto":0,"macro_bias_veto":0,"end_of_data":0,"strict_delta_veto":0,"exhaustion_veto":0,"inactive_hours_veto":0,"low_volume_day_veto":0,"btc_regime_veto":0}
     trades=[]; pos=None
     fee=max(0.0,fee_bps_per_side)/10000.0
     # Causal intraday activity guard: compare cumulative volume pace with the
@@ -106,6 +107,7 @@ def simulate_walk_forward(frame: pd.DataFrame, *, symbol: str="UNKNOWN",
         btc_regimes = btc_cvd_regime_filter(btc_frame, config=cfg)
     normalized_symbol = symbol.upper().replace("/", "").replace("-", "").replace("_", "")
     is_alt = normalized_symbol.endswith("USDT") and normalized_symbol not in {"BTCUSDT"}
+    is_crypto = normalized_symbol.endswith("USDT")
     vwap_values = None
     if engine == "hybrid":
         tv = df["tick_volume"] if "tick_volume" in df else df["volume"] if "volume" in df else pd.Series(1.0, index=df.index)
@@ -118,6 +120,16 @@ def simulate_walk_forward(frame: pd.DataFrame, *, symbol: str="UNKNOWN",
         funnel["bars_seen"]+=1
         # Existing position management first; stop wins if SL and TP share a bar.
         if pos is not None:
+            # Weekend gap protection: Friday close before market shut
+            if not is_crypto and isinstance(ts, pd.Timestamp) and ts.weekday() == 4:
+                h_exit, m_exit = cfg.friday_exit_cutoff_utc
+                if ts.hour > h_exit or (ts.hour == h_exit and ts.minute >= m_exit):
+                    exit_price = float(bar.close)
+                    gross = ((exit_price - pos.entry) if pos.side == "LONG" else (pos.entry - exit_price)) / pos.risk
+                    pos.realized_r += pos.qty_remaining * gross - fee * (pos.entry + exit_price) * pos.qty_remaining / pos.risk
+                    trades.append({"entry_time": str(df.index[pos.entry_index]), "exit_time": str(ts), "side": pos.side, "net_r": pos.realized_r, "exit_reason": "WEEKEND_CLOSE", "tp1_taken": pos.tp1_taken, "divergence_type": pos.divergence})
+                    funnel["weekend_close"] += 1; pos = None; continue
+
             held_seconds=(ts-df.index[pos.entry_index]).total_seconds() if hasattr(ts-df.index[pos.entry_index],"total_seconds") else (i-pos.entry_index)*60
             while held_seconds >= (pos.funding_events+1)*8*3600:
                 pos.realized_r -= funding_rate*pos.entry*pos.qty_remaining/pos.risk
@@ -140,10 +152,25 @@ def simulate_walk_forward(frame: pd.DataFrame, *, symbol: str="UNKNOWN",
                 gross=((pos.tp2-pos.entry) if pos.side=="LONG" else (pos.entry-pos.tp2))/pos.risk
                 pos.realized_r += pos.qty_remaining*gross - fee*(pos.entry+pos.tp2)*pos.qty_remaining/pos.risk
                 trades.append({"entry_time":str(df.index[pos.entry_index]),"exit_time":str(ts),"side":pos.side,"net_r":pos.realized_r,"exit_reason":"TP2","tp1_taken":True,"divergence_type":pos.divergence})
-                funnel["tp2"]+=1; pos=None
+                funnel["tp2"]+=1; pos=None; continue
+
+            # Time-Stop exit: if TP1 not reached within max_hold_bars, exit at current close
+            if not pos.tp1_taken and (i - pos.entry_index) >= cfg.max_hold_bars:
+                exit_price = float(bar.close)
+                gross = ((exit_price - pos.entry) if pos.side == "LONG" else (pos.entry - exit_price)) / pos.risk
+                pos.realized_r += pos.qty_remaining * gross - fee * (pos.entry + exit_price) * pos.qty_remaining / pos.risk
+                trades.append({"entry_time": str(df.index[pos.entry_index]), "exit_time": str(ts), "side": pos.side, "net_r": pos.realized_r, "exit_reason": "TIME_STOP", "tp1_taken": pos.tp1_taken, "divergence_type": pos.divergence})
+                funnel["time_stop"] += 1; pos = None; continue
+
             if pos is not None: continue
         # Session and liquidity gates are evaluated before any new signal.
         if isinstance(df.index, pd.DatetimeIndex):
+            # Friday entry cutoff: prevent new positions before weekend close for non-crypto
+            if not is_crypto and ts.weekday() == 4:
+                h_entry, m_entry = cfg.friday_entry_cutoff_utc
+                if ts.hour > h_entry or (ts.hour == h_entry and ts.minute >= m_entry):
+                    funnel["weekend_entry_veto"] += 1
+                    continue
             hour = int(ts.hour)
             h0, h1 = cfg.active_hours_utc
             if not (h0 <= hour < h1 if h0 < h1 else hour >= h0 or hour < h1):
@@ -196,6 +223,10 @@ def simulate_walk_forward(frame: pd.DataFrame, *, symbol: str="UNKNOWN",
             if z<=-2.0: side="LONG"
             elif z>=2.0: side="SHORT"
         if side not in ("LONG","SHORT"): continue
+        if macro_bias is not None:
+            if (macro_bias == 1 and side != "LONG") or (macro_bias == -1 and side != "SHORT") or (macro_bias == 0):
+                funnel["macro_bias_veto"] += 1
+                continue
         if is_alt and engine in ("orderflow", "hybrid"):
             if btc_regimes is None:
                 funnel["btc_regime_veto"] += 1

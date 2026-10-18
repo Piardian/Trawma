@@ -83,6 +83,16 @@ BLACKLIST_FOREX_SYMBOLS: frozenset[str] = frozenset({
     "GBPJPY",
 })
 
+# Unanchored MT5 indices without centralized CME depth
+BLACKLIST_UNANCHORED_INDICES: frozenset[str] = frozenset({
+    "NAS100",
+    "US100",
+    "SP500",
+    "US500",
+})
+
+BLACKLIST_SYMBOLS: frozenset[str] = BLACKLIST_FOREX_SYMBOLS.union(BLACKLIST_UNANCHORED_INDICES)
+
 
 def is_whitelisted(symbol: str) -> bool:
     norm = symbol.upper().replace("/", "").replace("-", "").replace("_", "")
@@ -91,7 +101,7 @@ def is_whitelisted(symbol: str) -> bool:
 
 def is_blacklisted(symbol: str) -> bool:
     norm = symbol.upper().replace("/", "").replace("-", "").replace("_", "")
-    return norm in BLACKLIST_FOREX_SYMBOLS
+    return norm in BLACKLIST_SYMBOLS
 
 
 def get_profile(symbol: str) -> InstrumentProfile | None:

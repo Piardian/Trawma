@@ -26,6 +26,7 @@ from .instrument_profiles import (
 )
 from .macro_gate import read_macro_bias, is_macro_aligned, find_macro_bias_file
 from .execution_notifier import ExecutionNotifier, OrderFlowSignal
+from .execution_bridge import ExecutionBridge
 from .orderflow_engine import (
     OrderFlowConfig,
     calculate_orderflow_features,
@@ -41,10 +42,12 @@ class LiveSentinelScanner:
     def __init__(
         self,
         notifier: ExecutionNotifier | None = None,
+        bridge: ExecutionBridge | None = None,
         macro_path: Path | str | None = None,
         config: OrderFlowConfig | None = None,
     ):
         self.notifier = notifier or ExecutionNotifier()
+        self.bridge = bridge or ExecutionBridge(mode="notify_only", notifier=self.notifier)
         self.macro_path = macro_path or find_macro_bias_file()
         self.config = config or OrderFlowConfig()
         self._last_processed_bar_time: dict[tuple[str, str], pd.Timestamp] = {}
@@ -137,7 +140,15 @@ class LiveSentinelScanner:
             engine="TRAWMA_ORDERFLOW",
         )
 
-        self.notifier.notify(sig)
+        if self.bridge.paper_tracker:
+            self.bridge.paper_tracker.update({
+                "symbol": symbol,
+                "low": float(closed.iloc[-1].low),
+                "high": float(closed.iloc[-1].high),
+                "close": float(closed.iloc[-1].close),
+            }, last_bar_time)
+
+        self.bridge.execute_signal(sig)
         return sig
 
     def scan_crypto_symbol(self, client, symbol: str, btc_frame: pd.DataFrame | None = None) -> OrderFlowSignal | None:
@@ -241,7 +252,15 @@ class LiveSentinelScanner:
             engine="TRAWMA_ORDERFLOW",
         )
 
-        self.notifier.notify(sig)
+        if self.bridge.paper_tracker:
+            self.bridge.paper_tracker.update({
+                "symbol": symbol,
+                "low": float(frame.iloc[-1].low),
+                "high": float(frame.iloc[-1].high),
+                "close": float(frame.iloc[-1].close),
+            }, last_bar_time)
+
+        self.bridge.execute_signal(sig)
         return sig
 
 
@@ -252,9 +271,13 @@ def run_sentinel_pipeline(
     interval_sec: int = 15,
     refresh_macro: bool = True,
     macro_path: Path | str | None = None,
+    execute_mode: str = "notify_only",
+    confirm_live: bool = False,
+    risk_pct: float = 0.5,
 ) -> int:
     """Main CLI entrypoint for Trawma sentinel watch mode."""
-    scanner = LiveSentinelScanner(macro_path=macro_path)
+    bridge = ExecutionBridge(mode=execute_mode, confirm_live=confirm_live, risk_pct=risk_pct)
+    scanner = LiveSentinelScanner(bridge=bridge, macro_path=macro_path)
 
     try:
         if hasattr(sys.stdout, "reconfigure"):
@@ -263,7 +286,7 @@ def run_sentinel_pipeline(
         pass
 
     print("\n=======================================================")
-    print("[TRAWMA LIVE SENTINEL WATCHER ACTIVE]")
+    print(f"[TRAWMA LIVE SENTINEL WATCHER ACTIVE — MODE: {execute_mode.upper()}]")
     print("=======================================================")
     if scan_begonya:
         print("  - MT5 Begonya Taramasi : AKTIF (XAUUSD M5 Whitelist)")
@@ -271,6 +294,7 @@ def run_sentinel_pipeline(
         print("  - Binance Kripto       : AKTIF (BTCUSDT M15, SOLUSDT M15)")
     print(f"  - Surekli Izleme (--watch): {'ACIK' if watch else 'KAPALI (Tek Gecis)'}")
     print(f"  - Tarama Periyodu      : {interval_sec} saniye")
+    print(f"  - Risk Orani           : %{risk_pct:.2f}")
     macro_file = find_macro_bias_file([Path(macro_path)] if macro_path else None)
     print(f"  - Begonya Makro Dosyasi: {macro_file or 'Bulunamadi'}")
     print("=======================================================\n", flush=True)

@@ -20,6 +20,9 @@ def build_parser() -> argparse.ArgumentParser:
     sentinel_group.add_argument("--interval-sec", type=int, default=15, help="Scan loop sleep interval in seconds")
     sentinel_group.add_argument("--refresh-macro", action="store_true", help="Refresh macro gate on each iteration")
     sentinel_group.add_argument("--macro-path", type=Path, default=None, help="Custom path to macro_bias_gate.json")
+    sentinel_group.add_argument("--execute-mode", choices=("notify_only", "paper", "mt5_live"), default="notify_only", help="Execution mode")
+    sentinel_group.add_argument("--confirm-live", action="store_true", help="Explicit confirmation required to send real orders in mt5_live mode")
+    sentinel_group.add_argument("--risk-pct", type=float, default=0.5, help="Risk percentage per trade (default: 0.5%%)")
 
     # Offline / single-run options (preserved from core.py)
     core_group = parser.add_argument_group("Offline Feature/POI Analysis Options")
@@ -48,6 +51,9 @@ def main(argv=None) -> int:
             interval_sec=args.interval_sec,
             refresh_macro=args.refresh_macro,
             macro_path=args.macro_path,
+            execute_mode=args.execute_mode,
+            confirm_live=args.confirm_live,
+            risk_pct=args.risk_pct,
         )
 
     # Otherwise forward to classic offline analysis using the parsed args
