@@ -13,6 +13,12 @@ from typing import Any, Mapping
 import urllib.parse
 import urllib.request
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    pass
+
 
 class SignalDeduplicator:
     """Thread-safe in-memory deduplicator for executed bar signals."""
@@ -57,7 +63,7 @@ class OrderFlowSignal:
     engine: str = "TRAWMA_ORDERFLOW"
 
 
-def format_signal_text(sig: OrderFlowSignal, format_type: str = "text") -> str:
+def format_signal_text(sig: OrderFlowSignal, format_type: str = "text", scoreboard: str | None = None) -> str:
     side_icon = "🟢 LONG" if sig.side == "LONG" else "🔴 SHORT"
     rr_tp1 = abs(sig.tp1 - sig.entry_price) / max(1e-9, sig.risk)
     rr_tp2 = abs(sig.tp2 - sig.entry_price) / max(1e-9, sig.risk)
@@ -74,7 +80,7 @@ def format_signal_text(sig: OrderFlowSignal, format_type: str = "text") -> str:
 
     if format_type == "telegram_html":
         side_icon = "🟢 LONG" if sig.side == "LONG" else "🔴 SHORT"
-        return (
+        msg = (
             f"<b>⚡ TRAWMA ORDER FLOW SİNYALİ</b>\n\n"
             f"<b>Sembol:</b> <code>{sig.symbol}</code> ({sig.timeframe})\n"
             f"<b>Yön:</b> {side_icon}\n"
@@ -89,10 +95,13 @@ def format_signal_text(sig: OrderFlowSignal, format_type: str = "text") -> str:
             f"<b>TP2 (2R):</b> <code>{sig.tp2:.5f}</code> (R:R {rr_tp2:.1f}R)\n"
             f"<b>Bar Zamanı (UTC):</b> <code>{sig.bar_time}</code>"
         )
+        if scoreboard:
+            msg += f"\n\n{scoreboard}"
+        return msg
 
     # Console plain text format
     side_label = "[LONG]" if sig.side == "LONG" else "[SHORT]"
-    return (
+    out = (
         f"\n=======================================================\n"
         f"[TRAWMA ORDER FLOW CANLI SINYAL]\n"
         f"Sembol       : {sig.symbol} ({sig.timeframe})\n"
@@ -110,6 +119,9 @@ def format_signal_text(sig: OrderFlowSignal, format_type: str = "text") -> str:
         f"Bar Zamani   : {sig.bar_time} UTC\n"
         f"=======================================================\n"
     )
+    if scoreboard:
+        out += f"\n{scoreboard}\n"
+    return out
 
 
 def send_telegram_alert(message_html: str, bot_token: str | None = None, chat_id: str | None = None) -> bool:
@@ -143,17 +155,17 @@ class ExecutionNotifier:
         self.bot_token = bot_token
         self.chat_id = chat_id
 
-    def notify(self, signal: OrderFlowSignal) -> bool:
+    def notify(self, signal: OrderFlowSignal, scoreboard: str | None = None) -> bool:
         """Deduplicate and notify. Returns True if signal was newly dispatched."""
         if not self.deduplicator.is_new(signal.symbol, signal.timeframe, signal.bar_time):
             return False
 
         # 1. Console print
-        console_msg = format_signal_text(signal, format_type="text")
+        console_msg = format_signal_text(signal, format_type="text", scoreboard=scoreboard)
         print(console_msg, flush=True)
 
         # 2. Telegram message
-        tg_html = format_signal_text(signal, format_type="telegram_html")
+        tg_html = format_signal_text(signal, format_type="telegram_html", scoreboard=scoreboard)
         sent = send_telegram_alert(tg_html, self.bot_token, self.chat_id)
         if sent:
             print(f"[Notifier] Telegram bildirimi iletildi -> {signal.symbol} {signal.side}")

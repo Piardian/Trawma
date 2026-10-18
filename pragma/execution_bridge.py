@@ -152,11 +152,13 @@ class PaperOrderTracker:
                 pos["stop_loss"] = pos["entry_price"]  # Breakeven SL
                 updates.append(pos)
                 if self.notifier:
+                    scoreboard = self.format_scoreboard_html()
                     msg = (
-                        f"🎯 <b>[PAPER TP1 ALINDI & BREAKEVEN]</b>\n"
-                        f"<b>Sembol:</b> {pos['symbol']} | <b>Yön:</b> {side}\n"
-                        f"<b>Kâr Alınan:</b> %50 | <b>Yeni SL:</b> {pos['stop_loss']:.5f} (Breakeven)\n"
-                        f"<b>Realized:</b> +0.50R"
+                        f"🎯 <b>[PAPER TP1 ALINDI & BREAKEVEN]</b>\n\n"
+                        f"<b>Sembol:</b> <code>{pos['symbol']}</code> ({pos.get('timeframe', 'M5')}) | <b>Yön:</b> {side}\n"
+                        f"<b>Kâr Alınan:</b> %50 (+0.50R)\n"
+                        f"<b>Yeni SL:</b> <code>{pos['stop_loss']:.5f}</code> (Breakeven)\n\n"
+                        f"{scoreboard}"
                     )
                     send_telegram_alert(msg, self.notifier.bot_token, self.notifier.chat_id)
 
@@ -176,6 +178,62 @@ class PaperOrderTracker:
         self._save()
         return updates
 
+    def get_monthly_stats(self, target_month: str | None = None) -> dict[str, Any]:
+        """Calculate monthly performance statistics from paper positions."""
+        if target_month is None:
+            target_month = datetime.now(timezone.utc).strftime("%Y-%m")
+
+        closed = [
+            p for p in self._positions
+            if p.get("status") == "CLOSED"
+            and (
+                str(p.get("exit_time", "")).startswith(target_month)
+                or (not p.get("exit_time") and str(p.get("entry_time", "")).startswith(target_month))
+            )
+        ]
+
+        total_closed = len(closed)
+        net_r = sum(float(p.get("realized_r", 0.0)) for p in closed)
+
+        tp_count = sum(1 for p in closed if p.get("exit_reason") == "TP2" or (float(p.get("realized_r", 0.0)) > 0.0 and p.get("tp1_taken")))
+        sl_count = sum(1 for p in closed if p.get("exit_reason") == "SL" and not p.get("tp1_taken"))
+        be_count = sum(1 for p in closed if p.get("tp1_taken") and p.get("exit_reason") == "SL")
+        time_stop_count = sum(1 for p in closed if p.get("exit_reason") == "TIME_STOP")
+        weekend_count = sum(1 for p in closed if p.get("exit_reason") == "WEEKEND_CLOSE")
+
+        win_trades = sum(1 for p in closed if float(p.get("realized_r", 0.0)) > 0.0)
+        win_rate = (win_trades / total_closed * 100.0) if total_closed > 0 else 0.0
+
+        return {
+            "month": target_month,
+            "total_closed": total_closed,
+            "net_r": net_r,
+            "tp_count": tp_count,
+            "sl_count": sl_count,
+            "be_count": be_count,
+            "time_stop_count": time_stop_count,
+            "weekend_count": weekend_count,
+            "win_rate": win_rate,
+            "open_count": len(self.open_positions),
+        }
+
+    def format_scoreboard_html(self, target_month: str | None = None) -> str:
+        """Format monthly performance scoreboard for Telegram and reports."""
+        stats = self.get_monthly_stats(target_month)
+        sign = "+" if stats["net_r"] >= 0 else ""
+        return (
+            f"📊 <b>[AYLIK PERFORMANS SAYACI — {stats['month']}]</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"💰 <b>Aylık Net R  :</b> <b>{sign}{stats['net_r']:.2f}R</b>\n"
+            f"📈 <b>Kazanma Oranı :</b> %{stats['win_rate']:.1f} ({stats['tp_count']}/{stats['total_closed']} işlem)\n"
+            f"🎯 <b>TP (Kâr Al)  :</b> {stats['tp_count']}\n"
+            f"🛑 <b>SL (Zarar Durdur):</b> {stats['sl_count']}\n"
+            f"🛡️ <b>BE (Başabaş) :</b> {stats['be_count']}\n"
+            f"⏳ <b>Time-Stop    :</b> {stats['time_stop_count']}\n"
+            f"📂 <b>Açık İşlem   :</b> {stats['open_count']}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        )
+
     def _close_position(self, pos: dict[str, Any], exit_price: float, reason: str, exit_time: Any) -> None:
         pos["status"] = "CLOSED"
         pos["exit_price"] = exit_price
@@ -186,13 +244,16 @@ class PaperOrderTracker:
         pos["qty_remaining"] = 0.0
 
         if self.notifier:
+            scoreboard = self.format_scoreboard_html()
             icon = "✅" if pos["realized_r"] > 0 else "❌"
+            sign = "+" if pos["realized_r"] >= 0 else ""
             msg = (
-                f"{icon} <b>[PAPER POZİSYON KAPANDI]</b>\n"
-                f"<b>Sembol:</b> {pos['symbol']} ({pos['timeframe']})\n"
+                f"{icon} <b>[PAPER POZİSYON KAPANDI]</b>\n\n"
+                f"<b>Sembol:</b> <code>{pos['symbol']}</code> ({pos.get('timeframe', 'M5')}) | <b>Yön:</b> {pos['side']}\n"
                 f"<b>Gerekçe:</b> <code>{reason}</code>\n"
-                f"<b>Çıkış Fiyatı:</b> {exit_price:.5f}\n"
-                f"<b>Net Sonuç:</b> <b>{pos['realized_r']:+.2f}R</b>"
+                f"<b>Çıkış Fiyatı:</b> <code>{exit_price:.5f}</code>\n"
+                f"<b>İşlem Sonucu:</b> <b>{sign}{pos['realized_r']:+.2f}R</b>\n\n"
+                f"{scoreboard}"
             )
             send_telegram_alert(msg, self.notifier.bot_token, self.notifier.chat_id)
 
@@ -295,10 +356,20 @@ class ExecutionBridge:
 
     def execute_signal(self, signal: OrderFlowSignal) -> dict[str, Any]:
         """Dispatch signal according to selected mode."""
-        # 1. Always notify Telegram & Console
-        self.notifier.notify(signal)
+        # 1. Monthly Scoreboard
+        scoreboard = None
+        if self.paper_tracker:
+            scoreboard = self.paper_tracker.format_scoreboard_html()
+        elif Path(DEFAULT_PAPER_PATH).exists():
+            try:
+                scoreboard = PaperOrderTracker(storage_path=DEFAULT_PAPER_PATH).format_scoreboard_html()
+            except Exception:
+                scoreboard = None
 
-        # 2. Mode dispatch
+        # 2. Always notify Telegram & Console with Scoreboard
+        self.notifier.notify(signal, scoreboard=scoreboard)
+
+        # 3. Mode dispatch
         if self.mode == "notify_only":
             return {"status": "NOTIFIED", "mode": "notify_only"}
 

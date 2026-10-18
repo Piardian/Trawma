@@ -127,3 +127,73 @@ def test_paper_order_tracker_time_stop_after_16_bars(tmp_path):
     closed = tracker._positions[0]
     assert closed["status"] == "CLOSED"
     assert closed["exit_reason"] == "TIME_STOP"
+
+
+def test_paper_order_tracker_monthly_stats_and_scoreboard(tmp_path):
+    paper_file = tmp_path / "paper_positions.json"
+    tracker = PaperOrderTracker(storage_path=paper_file)
+
+    # 1. Add a winning trade (TP2 -> +1.5R)
+    tracker._positions.append({
+        "id": "p1",
+        "symbol": "SOLUSDT",
+        "status": "CLOSED",
+        "tp1_taken": True,
+        "exit_reason": "TP2",
+        "entry_time": "2026-10-01 10:00:00",
+        "exit_time": "2026-10-01 11:00:00",
+        "realized_r": 1.5,
+    })
+
+    # 2. Add a loss (SL -> -1.0R)
+    tracker._positions.append({
+        "id": "p2",
+        "symbol": "XAUUSD",
+        "status": "CLOSED",
+        "tp1_taken": False,
+        "exit_reason": "SL",
+        "entry_time": "2026-10-02 14:00:00",
+        "exit_time": "2026-10-02 14:15:00",
+        "realized_r": -1.0,
+    })
+
+    # 3. Add a breakeven trade (TP1 + BE SL -> +0.5R)
+    tracker._positions.append({
+        "id": "p3",
+        "symbol": "SOLUSDT",
+        "status": "CLOSED",
+        "tp1_taken": True,
+        "exit_reason": "SL",
+        "entry_time": "2026-10-03 09:00:00",
+        "exit_time": "2026-10-03 10:30:00",
+        "realized_r": 0.5,
+    })
+
+    # 4. Add a time-stop trade (TIME_STOP -> -0.1R)
+    tracker._positions.append({
+        "id": "p4",
+        "symbol": "XAUUSD",
+        "status": "CLOSED",
+        "tp1_taken": False,
+        "exit_reason": "TIME_STOP",
+        "entry_time": "2026-10-04 12:00:00",
+        "exit_time": "2026-10-04 13:20:00",
+        "realized_r": -0.1,
+    })
+
+    stats = tracker.get_monthly_stats(target_month="2026-10")
+    assert stats["total_closed"] == 4
+    assert stats["tp_count"] == 2  # p1 and p3 (realized > 0 with tp1 taken)
+    assert stats["sl_count"] == 1  # p2
+    assert stats["be_count"] == 1  # p3
+    assert stats["time_stop_count"] == 1  # p4
+    assert pytest.approx(stats["net_r"], 0.01) == 0.90  # 1.5 - 1.0 + 0.5 - 0.1 = 0.90R
+    assert stats["win_rate"] == 50.0  # 2 wins out of 4
+
+    scoreboard = tracker.format_scoreboard_html(target_month="2026-10")
+    assert "AYLIK PERFORMANS SAYACI" in scoreboard
+    assert "+0.90R" in scoreboard
+    assert "TP (Kâr Al)  :</b> 2" in scoreboard
+    assert "SL (Zarar Durdur):</b> 1" in scoreboard
+    assert "BE (Başabaş) :</b> 1" in scoreboard
+
