@@ -1,11 +1,13 @@
 name: Real Binance walk-forward comparison
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       count:
-        description: "Closed M1 bars per symbol (minimum 50000)"
+        description: "Closed M1 bars per symbol (minimum 100000)"
         required: true
-        default: "50000"
+        default: "100000"
       symbols:
         description: "Space-separated Binance USD-M symbols"
         required: true
@@ -26,7 +28,7 @@ jobs:
       - name: Run unit tests
         run: pytest -v
       - name: Fetch real taker delta and run walk-forward comparisons
-        run: python scripts/run_real_comparison.py --count "${{ inputs.count }}" --symbols ${{ inputs.symbols }} --output artifacts/real_walk_forward_comparison.json
+        run: python scripts/run_real_comparison.py --count "${{ inputs.count || '100000' }}" --symbols ${{ inputs.symbols || 'BTCUSDT SOLUSDT' }} --output artifacts/real_walk_forward_comparison.json
       - uses: actions/upload-artifact@v4
         with:
           name: trawma-real-walk-forward-report
