@@ -1,0 +1,24 @@
+[
+  {
+    "id": "paper_1_1792353620",
+    "symbol": "BTCUSDT",
+    "timeframe": "M15",
+    "side": "LONG",
+    "entry_price": 80840.9,
+    "stop_loss": 80721.32142857142,
+    "initial_stop": 80721.32142857142,
+    "tp1": 80960.47857142857,
+    "tp2": 81080.05714285714,
+    "risk": 119.57857142857289,
+    "lot_size": 1.0,
+    "qty_remaining": 1.0,
+    "tp1_taken": false,
+    "entry_time": "2026-10-18 19:45:00+00:00",
+    "bars_held": 0,
+    "status": "OPEN",
+    "exit_time": null,
+    "exit_price": null,
+    "exit_reason": null,
+    "realized_r": 0.0
+  }
+]
