@@ -104,7 +104,8 @@ def simulate_walk_forward(frame: pd.DataFrame, *, symbol: str="UNKNOWN",
     btc_regimes = None
     if btc_frame is not None:
         btc_regimes = btc_cvd_regime_filter(btc_frame, config=cfg)
-    is_alt = symbol.upper().replace("/", "").replace("-", "") not in {"BTCUSDT", "BTCUSD", "BTC"}
+    normalized_symbol = symbol.upper().replace("/", "").replace("-", "").replace("_", "")
+    is_alt = normalized_symbol.endswith("USDT") and normalized_symbol not in {"BTCUSDT"}
     for i in range(50,len(df)-1):
         bar=df.iloc[i]; nextbar=df.iloc[i+1]; ts=df.index[i]
         funnel["bars_seen"]+=1
