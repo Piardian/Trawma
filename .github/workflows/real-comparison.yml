@@ -12,6 +12,9 @@ on:
         description: "Space-separated Binance USD-M symbols"
         required: true
         default: "BTCUSDT SOLUSDT"
+concurrency:
+  group: trawma-real-comparison-${{ github.ref }}
+  cancel-in-progress: true
 permissions:
   contents: read
 jobs:
