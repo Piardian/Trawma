@@ -71,8 +71,8 @@ class MT5DataClient:
                 import MetaTrader5 as mt5_module  # type: ignore[no-redef]
             except ImportError as exc:
                 raise MT5DataError(
-                    "MetaTrader5 package is not installed. Install requirements.txt "
-                    "and run this on the computer with the MT5 terminal."
+                    "MetaTrader5 package is not installed. Run 'pip install -e .[mt5]' "
+                    "on the computer with the MT5 terminal."
                 ) from exc
         self.mt5 = mt5_module
         self._initialized_here = False
