@@ -105,7 +105,7 @@ def _divergence_fixture(side, kind):
     # 26 bars: a confirmed prior extreme, a penultimate divergence/absorption
     # candle, and a final closed delta-flip confirmation candle.
     n = 26
-    idx = pd.date_range("2026-01-01T00:00:00Z", periods=n, freq="1min")
+    idx = pd.date_range("2026-01-01T12:00:00Z", periods=n, freq="1min")
     close = np.full(n, 100.0)
     high = np.full(n, 100.4)
     low = np.full(n, 99.6)
@@ -172,9 +172,13 @@ def _divergence_fixture(side, kind):
 def test_controlled_divergence_fixtures(side, kind):
     frame = _divergence_fixture(side, kind)
     result = evaluate_orderflow_trigger(frame, side)
-    assert result.action == "EXECUTE", result
-    assert result.side == side
-    assert result.metrics["cvd_divergence_type"] == kind
+    if kind == "EXHAUSTION":
+        assert result.action == "NO_TRADE", result
+        assert result.reason == "no_cvd_divergence_or_absorption"
+    else:
+        assert result.action == "EXECUTE", result
+        assert result.side == side
+        assert result.metrics["cvd_divergence_type"] == "ABSORPTION"
 
 
 def test_strict_real_delta_rejects_synthetic_bvc():
@@ -193,3 +197,35 @@ def test_delta_quality_and_source_are_explicit():
     assert set(real_out["delta_quality"]) == {"REAL"}
     assert set(synthetic_out["delta_source"]) == {"synthetic_bvc"}
     assert set(synthetic_out["delta_quality"]) == {"ESTIMATED"}
+
+
+
+def test_absorption_only_and_selective_pool_defaults():
+    cfg = OrderFlowConfig()
+    assert cfg.allow_exhaustion is False
+    assert cfg.swing_left == 10 and cfg.swing_right == 10
+    assert cfg.volume_spike_multiple == pytest.approx(2.5)
+    assert cfg.active_hours_utc == (8, 22)
+    assert cfg.filter_low_volume_days is True
+
+
+def test_trigger_vetoes_inactive_utc_hours():
+    frame = bars(40, start="2026-01-01T02:00:00Z")
+    frame["volume_delta"] = 0.0
+    result = evaluate_orderflow_trigger(frame, "LONG")
+    assert result.action == "NO_TRADE"
+    assert result.reason == "inactive_liquidity_hours"
+
+
+def test_btc_cvd_regime_requires_price_and_delta_agreement():
+    from pragma.orderflow_engine import btc_cvd_regime_filter
+    idx = pd.date_range("2026-01-01T00:00:00Z", periods=40, freq="1min")
+    frame = pd.DataFrame({
+        "open": np.arange(40) + 100.0,
+        "high": np.arange(40) + 101.0,
+        "low": np.arange(40) + 99.0,
+        "close": np.arange(40) + 100.5,
+        "volume_delta": np.full(40, 10.0),
+    }, index=idx)
+    regime = btc_cvd_regime_filter(frame)
+    assert regime.iloc[-1] == "IMBALANCE_BULL"
