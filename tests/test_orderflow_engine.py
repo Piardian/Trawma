@@ -118,7 +118,7 @@ def _divergence_fixture(side, kind):
         if kind == "EXHAUSTION":
             low[24] = 97.8
             close[24] = 98.2
-            delta[24] = -2.0
+            delta[24] = 0.0
         else:
             low[24] = 98.2
             close[24] = 98.5
@@ -132,7 +132,7 @@ def _divergence_fixture(side, kind):
         if kind == "EXHAUSTION":
             high[24] = 102.2
             close[24] = 101.8
-            delta[24] = 2.0
+            delta[24] = 0.0
         else:
             high[24] = 101.8
             close[24] = 101.5
