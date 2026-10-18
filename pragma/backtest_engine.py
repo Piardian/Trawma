@@ -98,7 +98,7 @@ def simulate_walk_forward(frame: pd.DataFrame, *, symbol: str="UNKNOWN",
                 if day.weekday() >= 5 or pd.isna(baseline.loc[day]) or baseline.loc[day] <= 0:
                     continue
                 cumulative = df.loc[rows, volume_col].fillna(0).clip(lower=0).cumsum()
-                elapsed_fraction = ((df.index[rows] - day).total_seconds() / 86400.0).clip(0.0, 1.0)
+                elapsed_fraction = np.clip((df.index[rows] - day).total_seconds() / 86400.0, 0.0, 1.0)
                 pace_threshold = 0.70 * float(baseline.loc[day]) * elapsed_fraction
                 day_allowed.loc[rows] = cumulative.to_numpy() >= pace_threshold
     btc_regimes = None
