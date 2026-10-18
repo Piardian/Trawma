@@ -18,8 +18,11 @@ def aggregate(frame: pd.DataFrame, minutes: int) -> pd.DataFrame:
     for c in ("volume","tick_volume","buy_volume","sell_volume","volume_delta",
               "quote_asset_volume","taker_buy_base_asset_volume","taker_buy_quote_asset_volume"):
         if c in frame.columns: agg[c]="sum"
-    result=frame.resample(rules,label="left",closed="left").agg(agg).dropna(subset=["open","high","low","close"])
-    return result
+    grouped=frame.resample(rules,label="left",closed="left")
+    result=grouped.agg(agg).dropna(subset=["open","high","low","close"])
+    # Reject partial M5/M15 candles at the tail and any bucket with missing M1 bars.
+    complete=grouped["open"].count()==minutes
+    return result.loc[complete.reindex(result.index,fill_value=False)]
 
 def main():
     p=argparse.ArgumentParser()
