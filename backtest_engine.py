@@ -20,12 +20,12 @@ def _load_data(args):
         return frame, None, None
     if args.source == "binance":
         from pragma.data.binance_data import BinanceDataClient, filter_closed_bars
-        with BinanceDataClient(cache_dir=args.cache_dir) as client:
+        with BinanceDataClient(cache_dir=args.cache_dir, futures_only=True) as client:
             frame = client.rates(args.symbol, args.timeframe, count=args.count)
         frame = filter_closed_bars(frame, args.timeframe)
         btc = None
         if args.symbol.upper() not in {"BTCUSDT", "BTCUSD", "BTC"}:
-            with BinanceDataClient(cache_dir=args.cache_dir) as client:
+            with BinanceDataClient(cache_dir=args.cache_dir, futures_only=True) as client:
                 btc = client.rates("BTCUSDT", args.timeframe, count=args.count)
             btc = filter_closed_bars(btc, args.timeframe)
         return frame, None, btc
