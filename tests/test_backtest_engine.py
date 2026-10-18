@@ -30,3 +30,11 @@ def test_orderflow_strict_mode_uses_real_taker_delta():
 def test_walk_forward_rejects_insufficient_history():
     with pytest.raises(ValueError,match="100 bars"):
         simulate_walk_forward(sample(50))
+
+
+def test_low_volume_day_filter_is_causal_and_handles_multiple_days():
+    frame = sample(24 * 8)
+    frame.index = pd.date_range("2026-01-05T00:00:00Z", periods=len(frame), freq="h")
+    report = simulate_walk_forward(frame, symbol="TEST", engine="amt")
+    assert report["bars_processed"] == len(frame)
+    assert "low_volume_day_veto" in report["funnel_counts"]
