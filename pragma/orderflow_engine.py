@@ -5,7 +5,7 @@ from typing import Any, Literal, Mapping
 import numpy as np
 import pandas as pd
 
-EngineMode = Literal["amt", "orderflow", "hybrid"]
+EngineMode = Literal["amt", "orderflow", "orderflow_absorption", "hybrid", "hybrid_absorption", "cvd_momentum"]
 
 @dataclass(frozen=True)
 class OrderFlowConfig:
@@ -112,7 +112,8 @@ def _tick_rule(ticks: pd.DataFrame, bars: pd.DataFrame) -> pd.Series:
 
 def calculate_orderflow_features(frame: pd.DataFrame, *, ticks: pd.DataFrame|None=None, config: OrderFlowConfig|None=None) -> pd.DataFrame:
     prepared = {"bar_delta", "cvd", "delta_abs_mean_20", "delta_zscore",
-                "atr_14", "vol_sma_20", "delta_source", "delta_quality"}
+                "atr_14", "vol_sma_20", "delta_source", "delta_quality",
+                "vwap", "ema_200", "ema_20", "cvd_sma_20"}
     if prepared.issubset(frame.columns):
         return frame
     cfg=config or OrderFlowConfig()
@@ -120,7 +121,8 @@ def calculate_orderflow_features(frame: pd.DataFrame, *, ticks: pd.DataFrame|Non
     if prepared.issubset(df.columns):
         return df
     if df.empty:
-        for c in ("bar_delta","cvd","delta_abs_mean_20","delta_zscore","atr_14","vol_sma_20","delta_source","delta_quality"): df[c]=pd.Series(dtype="object" if c=="delta_source" else float,index=df.index)
+        for c in ("bar_delta","cvd","delta_abs_mean_20","delta_zscore","atr_14","vol_sma_20","delta_source","delta_quality","vwap","ema_200","ema_20","cvd_sma_20"):
+            df[c]=pd.Series(dtype="object" if c in ("delta_source","delta_quality") else float,index=df.index)
         return df
     if "volume_delta" in df and df.volume_delta.notna().any():
         delta=df.volume_delta.fillna(0.0).astype(float); source="real_taker"
@@ -156,6 +158,20 @@ def calculate_orderflow_features(frame: pd.DataFrame, *, ticks: pd.DataFrame|Non
     df["vol_sma_20"]=df[vc].rolling(max(1,cfg.volume_sma_period),min_periods=1).mean() if vc else np.nan
     df["delta_source"]=source
     df["delta_quality"]="REAL_TAKER" if source=="real_taker" else "TICK_ESTIMATE" if source=="tick_rule" else "ESTIMATED"
+
+    # Vectorized trend and session anchors
+    tv = df[vc].fillna(1.0).astype(float) if vc and vc in df else pd.Series(1.0, index=df.index)
+    pr = (df["high"].astype(float) + df["low"].astype(float) + df["close"].astype(float)) / 3.0
+    if cfg.session_reset == "daily" and isinstance(df.index, pd.DatetimeIndex):
+        cum_vol = tv.groupby(sessions, sort=False).cumsum()
+        cum_pv = (pr * tv).groupby(sessions, sort=False).cumsum()
+    else:
+        cum_vol = tv.cumsum()
+        cum_pv = (pr * tv).cumsum()
+    df["vwap"] = (cum_pv / cum_vol.replace(0, np.nan)).fillna(df["close"]).astype(float)
+    df["ema_200"] = df["close"].ewm(span=200, adjust=False).mean().astype(float)
+    df["ema_20"] = df["close"].ewm(span=20, adjust=False).mean().astype(float)
+    df["cvd_sma_20"] = df["cvd"].rolling(20, min_periods=1).mean().astype(float)
     return df
 
 def detect_orderflow_pools(frame: pd.DataFrame, *, config: OrderFlowConfig|None=None, profile: Any|None=None, previous_session_levels: Mapping[str,float]|None=None) -> list[LiquidityPool]:
@@ -285,3 +301,140 @@ def evaluate_orderflow_trigger(frame: pd.DataFrame, side: str, *, poi: Liquidity
         if tp1_distance is not None and tp1_distance/stop_distance<min_net_rr_tp1: return TriggerDecision("NO_TRADE",reason="tp1_rr_veto",metrics=metrics)
         if tp2_distance is not None and tp2_distance/stop_distance<min_net_rr_tp2: return TriggerDecision("NO_TRADE",reason="tp2_rr_veto",metrics=metrics)
     return TriggerDecision("EXECUTE",side=side,reason="orderflow_confirmed",metrics=metrics)
+
+
+def evaluate_cvd_momentum_trigger(
+    frame: pd.DataFrame,
+    *,
+    side: str | None = None,
+    ticks: pd.DataFrame | None = None,
+    config: OrderFlowConfig | None = None,
+    session_allowed: bool = True,
+    strict_real_delta: bool | None = None,
+    spread: float | None = None,
+    fee_bps_per_side: float = 4.0,
+) -> TriggerDecision:
+    """Evaluates CVD Momentum & Initiative Flow Pullback triggers.
+    
+    Captures trend continuation when price makes a calm pullback to EMA20/VWAP
+    and confirms an institutional ignition with an aggressive taker/tick delta burst.
+    """
+    cfg = config or OrderFlowConfig()
+    df = calculate_orderflow_features(frame, ticks=ticks, config=cfg)
+    if len(df) < max(25, cfg.delta_lookback):
+        return TriggerDecision("NO_TRADE", reason="insufficient_bars")
+
+    strict = cfg.strict_real_delta if strict_real_delta is None else bool(strict_real_delta)
+    if strict and str(df.delta_source.iloc[-1]) not in ("real_taker", "tick_rule"):
+        return TriggerDecision("NO_TRADE", reason="strict_real_delta_required", metrics={**_metrics(df), "delta_quality": "ESTIMATED"})
+
+    if not session_allowed:
+        return TriggerDecision("NO_TRADE", reason="session_veto")
+
+    if isinstance(df.index, pd.DatetimeIndex):
+        hour = int(df.index[-1].hour)
+        start_hour, end_hour = cfg.active_hours_utc
+        active = (start_hour <= hour < end_hour) if start_hour < end_hour else (hour >= start_hour or hour < end_hour)
+        if not active:
+            return TriggerDecision("NO_TRADE", reason="inactive_liquidity_hours", metrics=_metrics(df))
+
+    trigger = df.iloc[-1]
+    prev_bar = df.iloc[-2]
+    atr = float(trigger.atr_14)
+    if not np.isfinite(atr) or atr <= 0:
+        return TriggerDecision("NO_TRADE", reason="invalid_atr", metrics=_metrics(df))
+
+    delta_abs_mean = float(trigger.delta_abs_mean_20)
+    vol_sma = float(trigger.vol_sma_20) if pd.notna(trigger.vol_sma_20) else 0.0
+    vc = "tick_volume" if "tick_volume" in trigger else "volume" if "volume" in trigger else None
+    cur_vol = float(trigger[vc]) if vc and pd.notna(trigger[vc]) else 0.0
+
+    cur_delta = float(trigger.bar_delta)
+    cur_close = float(trigger.close)
+    cur_open = float(trigger.open)
+    cur_cvd = float(trigger.cvd)
+    cvd_sma = float(trigger.cvd_sma_20)
+    ema_200 = float(trigger.ema_200)
+    vwap = float(trigger.vwap)
+    ema_20 = float(trigger.ema_20)
+
+    # 5-bar pullback window prior to trigger bar: df.iloc[-6:-1]
+    pullback_window = df.iloc[max(0, len(df) - 6): -1]
+    if len(pullback_window) < 3:
+        return TriggerDecision("NO_TRADE", reason="insufficient_pullback_history", metrics=_metrics(df))
+
+    can_long = (side is None or str(side).upper() == "LONG")
+    can_short = (side is None or str(side).upper() == "SHORT")
+
+    long_signal = False
+    short_signal = False
+
+    # LONG Criteria
+    if can_long:
+        trend_long = (cur_close > ema_200) and (cur_close >= vwap - 0.25 * atr) and (cur_cvd > cvd_sma)
+        pullback_support = max(float(prev_bar.ema_20), float(prev_bar.vwap))
+        pullback_touched_long = bool((pullback_window.low <= pullback_support + 0.35 * atr).any())
+        vol_condition = (cur_vol >= 1.25 * vol_sma) if vol_sma > 0 else True
+        delta_condition_long = (cur_delta >= 1.35 * delta_abs_mean)
+        breakout_condition_long = (cur_close > cur_open) and (cur_close > float(prev_bar.high))
+
+        if trend_long and pullback_touched_long and delta_condition_long and vol_condition and breakout_condition_long:
+            long_signal = True
+
+    # SHORT Criteria
+    if can_short and not long_signal:
+        trend_short = (cur_close < ema_200) and (cur_close <= vwap + 0.25 * atr) and (cur_cvd < cvd_sma)
+        pullback_resistance = min(float(prev_bar.ema_20), float(prev_bar.vwap))
+        pullback_touched_short = bool((pullback_window.high >= pullback_resistance - 0.35 * atr).any())
+        vol_condition = (cur_vol >= 1.25 * vol_sma) if vol_sma > 0 else True
+        delta_condition_short = (cur_delta <= -1.35 * delta_abs_mean)
+        breakout_condition_short = (cur_close < cur_open) and (cur_close < float(prev_bar.low))
+
+        if trend_short and pullback_touched_short and delta_condition_short and vol_condition and breakout_condition_short:
+            short_signal = True
+
+    chosen_side = "LONG" if long_signal else ("SHORT" if short_signal else None)
+    if chosen_side is None:
+        metrics = {**_metrics(df), "cvd_divergence_type": "CVD_MOMENTUM_PULLBACK"}
+        return TriggerDecision("NO_TRADE", reason="no_cvd_momentum_ignition", metrics=metrics)
+
+    # Position Management for CVD_MOMENTUM
+    fee = max(0.0, fee_bps_per_side) / 10000.0
+    cost_price = cur_close * fee * 2.0 if spread is None else spread
+
+    if chosen_side == "LONG":
+        pullback_extreme = float(pullback_window.low.min())
+        raw_sl = pullback_extreme - 0.6 * atr
+        raw_risk = cur_close - raw_sl
+        risk = float(np.clip(raw_risk, 1.2 * atr, 2.2 * atr))
+        if cost_price > 0 and risk < 3.5 * cost_price:
+            risk = 3.5 * cost_price
+        stop_loss = cur_close - risk
+        tp1 = cur_close + 1.3 * risk
+        tp2 = cur_close + 2.5 * risk
+    else:
+        pullback_extreme = float(pullback_window.high.max())
+        raw_sl = pullback_extreme + 0.6 * atr
+        raw_risk = raw_sl - cur_close
+        risk = float(np.clip(raw_risk, 1.2 * atr, 2.2 * atr))
+        if cost_price > 0 and risk < 3.5 * cost_price:
+            risk = 3.5 * cost_price
+        stop_loss = cur_close + risk
+        tp1 = cur_close - 1.3 * risk
+        tp2 = cur_close - 2.5 * risk
+
+    metrics = {
+        **_metrics(df),
+        "cvd_divergence_type": "CVD_MOMENTUM_PULLBACK",
+        "entry_price": cur_close,
+        "stop_loss": stop_loss,
+        "tp1": tp1,
+        "tp2": tp2,
+        "risk": risk,
+        "rr_tp1": 1.3,
+        "rr_tp2": 2.5,
+        "max_hold_bars": 20,
+        "pullback_extreme": pullback_extreme,
+    }
+
+    return TriggerDecision("EXECUTE", side=chosen_side, reason="cvd_momentum_confirmed", metrics=metrics)

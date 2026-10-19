@@ -38,3 +38,26 @@ def test_low_volume_day_filter_is_causal_and_handles_multiple_days():
     report = simulate_walk_forward(frame, symbol="TEST", engine="amt")
     assert report["bars_processed"] == len(frame)
     assert "low_volume_day_veto" in report["funnel_counts"]
+
+
+def test_three_orderflow_engines_and_funnel_telemetry():
+    frame = sample(200)
+    for eng in ("orderflow_absorption", "hybrid_absorption", "cvd_momentum"):
+        report = simulate_walk_forward(frame, symbol="TEST", engine=eng)
+        assert report["engine"] == eng
+        funnel = report["funnel_counts"]
+        required_funnel_keys = (
+            "bars_evaluated",
+            "veto_session_hours",
+            "veto_low_volume_day",
+            "veto_btc_leader",
+            "poi_or_pullback_touches",
+            "passed_absorption_or_cvd",
+            "passed_delta_flip_or_ignition",
+            "rejected_high_cost_to_sl",
+            "rejected_low_rr",
+            "trades_opened",
+        )
+        for k in required_funnel_keys:
+            assert k in funnel, f"Missing funnel key {k} in engine {eng}"
+

@@ -141,8 +141,12 @@ class BinanceDataClient:
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(path.suffix + ".tmp")
         saved = frame.reset_index()
-        saved.to_csv(tmp, index=False)
-        tmp.replace(path)
+        try:
+            saved.to_csv(tmp, index=False)
+            tmp.replace(path)
+        except (PermissionError, OSError):
+            # Gracefully handle concurrent open file on Windows
+            pass
 
     def _request_page(self, base_url: str, symbol: str, interval: str,
                       end_time: int, limit: int) -> list:

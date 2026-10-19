@@ -45,7 +45,8 @@ def test_format_signal_text_contains_required_metrics():
     assert "LONG_ONLY" in html
 
 
-def test_execution_notifier_dispatches_only_new_signals(capsys):
+def test_execution_notifier_dispatches_only_new_signals(capsys, monkeypatch):
+    from unittest.mock import patch
     notifier = ExecutionNotifier()
     sig = OrderFlowSignal(
         symbol="BTCUSDT",
@@ -63,10 +64,14 @@ def test_execution_notifier_dispatches_only_new_signals(capsys):
         macro_bias="SHORT_ONLY",
     )
 
-    first = notifier.notify(sig)
-    captured = capsys.readouterr()
-    assert first is True
-    assert "TRAWMA ORDER FLOW CANLI SINYAL" in captured.out
+    with patch("pragma.execution_notifier.send_telegram_alert", return_value=True) as mock_send:
+        first = notifier.notify(sig)
+        captured = capsys.readouterr()
+        assert first is True
+        assert "TRAWMA ORDER FLOW CANLI SINYAL" in captured.out
+        assert mock_send.call_count == 1
 
-    second = notifier.notify(sig)
-    assert second is False
+        second = notifier.notify(sig)
+        assert second is False
+        assert mock_send.call_count == 1
+

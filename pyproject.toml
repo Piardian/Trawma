@@ -18,4 +18,4 @@ include = ["pragma*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-ra"
+addopts = "-ra --basetemp=.pytest_temp"

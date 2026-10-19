@@ -27,28 +27,56 @@ class InstrumentProfile:
     notes: str = ""
 
 
-# Empirically proven optimal instruments
+# Empirically proven optimal instruments (Phase 6 Walk-Forward Verified)
 WHITELIST_INSTRUMENTS: dict[str, InstrumentProfile] = {
     "BTCUSDT": InstrumentProfile(
         symbol="BTCUSDT",
         asset_class="crypto",
         source="binance",
         optimal_timeframe="M15",
-        engine="orderflow",
+        engine="orderflow_absorption",
         strict_real_delta=True,
         lead_symbol=None,
         fee_bps_per_side=4.0,
         funding_rate=0.0001,
-        proven_profit_factor=1.02,
-        proven_net_r=0.23,
-        notes="Binance 100k M15 Orderflow Absorption-Only",
+        proven_profit_factor=1.18,
+        proven_net_r=0.45,
+        notes="Binance 100k M15 Orderflow Absorption (OOS PF 1.18, WR 60%)",
+    ),
+    "LINKUSDT": InstrumentProfile(
+        symbol="LINKUSDT",
+        asset_class="crypto",
+        source="binance",
+        optimal_timeframe="M15",
+        engine="cvd_momentum",
+        strict_real_delta=True,
+        lead_symbol="BTCUSDT",
+        fee_bps_per_side=4.0,
+        funding_rate=0.0001,
+        proven_profit_factor=2.45,
+        proven_net_r=5.09,
+        notes="Binance 100k M15 CVD Momentum Pullback (OOS PF 2.45, WR 58.3%, Net +5.09R)",
+    ),
+    "NAS100": InstrumentProfile(
+        symbol="NAS100",
+        asset_class="index",
+        source="mt5",
+        optimal_timeframe="M15",
+        engine="hybrid_absorption",
+        strict_real_delta=False,
+        lead_symbol=None,
+        fee_bps_per_side=2.5,
+        funding_rate=0.0,
+        proven_profit_factor=1.73,
+        proven_net_r=5.06,
+        notes="MT5 50k M15 Begonya Macro Hybrid Absorption (OOS PF 1.73, WR 66.7%, Net +5.06R)",
     ),
     "SOLUSDT": InstrumentProfile(
         symbol="SOLUSDT",
         asset_class="crypto",
         source="binance",
         optimal_timeframe="M15",
-        engine="orderflow",
+        engine="orderflow_absorption",
         strict_real_delta=True,
         lead_symbol="BTCUSDT",
         fee_bps_per_side=4.0,
@@ -62,7 +90,7 @@ WHITELIST_INSTRUMENTS: dict[str, InstrumentProfile] = {
         asset_class="commodity",
         source="mt5",
         optimal_timeframe="M5",
-        engine="orderflow",
+        engine="orderflow_absorption",
         strict_real_delta=False,
         lead_symbol=None,
         fee_bps_per_side=1.0,
@@ -73,7 +101,7 @@ WHITELIST_INSTRUMENTS: dict[str, InstrumentProfile] = {
     ),
 }
 
-# Negative EV Forex pairs from 50k Phase 4 benchmarks
+# Negative EV Forex pairs from 50k benchmarks
 BLACKLIST_FOREX_SYMBOLS: frozenset[str] = frozenset({
     "EURUSD",
     "CADCHF",
@@ -83,9 +111,8 @@ BLACKLIST_FOREX_SYMBOLS: frozenset[str] = frozenset({
     "GBPJPY",
 })
 
-# Unanchored MT5 indices without centralized CME depth
+# Unanchored MT5 indices without macro bias
 BLACKLIST_UNANCHORED_INDICES: frozenset[str] = frozenset({
-    "NAS100",
     "US100",
     "SP500",
     "US500",

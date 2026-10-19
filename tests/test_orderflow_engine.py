@@ -229,3 +229,39 @@ def test_btc_cvd_regime_requires_price_and_delta_agreement():
     }, index=idx)
     regime = btc_cvd_regime_filter(frame)
     assert regime.iloc[-1] == "IMBALANCE_BULL"
+
+
+def test_evaluate_cvd_momentum_trigger_fires_on_uptrend_pullback():
+    from pragma.orderflow_engine import evaluate_cvd_momentum_trigger
+    idx = pd.date_range("2026-01-01T10:00:00Z", periods=50, freq="5min", tz="UTC")
+    prices = np.linspace(100, 120, 50)
+    df = pd.DataFrame({
+        "open": prices - 0.2,
+        "high": prices + 0.5,
+        "low": prices - 0.5,
+        "close": prices,
+        "volume": np.full(50, 100.0),
+        "tick_volume": np.full(50, 100.0),
+        "volume_delta": np.full(50, 10.0),
+    }, index=idx)
+    # Pullback near EMA20/VWAP
+    df.iloc[-4:-1, df.columns.get_loc("high")] = 113.0
+    df.iloc[-4:-1, df.columns.get_loc("low")] = 110.0
+    df.iloc[-4:-1, df.columns.get_loc("close")] = 112.0
+    df.iloc[-4:-1, df.columns.get_loc("open")] = 112.5
+    # Trigger bar: delta burst + volume burst + breakout close
+    df.iloc[-1, df.columns.get_loc("open")] = 112.0
+    df.iloc[-1, df.columns.get_loc("close")] = 118.0
+    df.iloc[-1, df.columns.get_loc("high")] = 119.0
+    df.iloc[-1, df.columns.get_loc("low")] = 111.5
+    df.iloc[-1, df.columns.get_loc("volume_delta")] = 100.0
+    df.iloc[-1, df.columns.get_loc("tick_volume")] = 300.0
+
+    decision = evaluate_cvd_momentum_trigger(df, side="LONG")
+    assert decision.action == "EXECUTE"
+    assert decision.side == "LONG"
+    assert decision.metrics["cvd_divergence_type"] == "CVD_MOMENTUM_PULLBACK"
+    assert decision.metrics["rr_tp1"] == 1.3
+    assert decision.metrics["rr_tp2"] == 2.5
+    assert decision.metrics["max_hold_bars"] == 20
+
